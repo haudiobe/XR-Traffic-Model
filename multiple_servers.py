@@ -1,77 +1,86 @@
 import asyncio
 from csv import DictReader
 from enum import Enum
+import struct
+import os
 
 
-class ClientContext:
-    _event = asyncio.Event()
+class SliceTypes(Enum):
+    X265_TYPE_IDR = 1
+    X265_TYPE_I = 2
+    X265_TYPE_P = 3
 
-    @property
-    def state(self):
-        return 'IDLE' if not type(self)._event.is_set() else 'CONFIGURED'
 
-    @state.setter
-    def state(self, val):
-        if val == 'IDLE':
-            type(self)._event.clear()
-        elif val == 'CONNECTED':
-            type(self)._event.clear()
-        elif val == 'TRAINED':
-            type(self)._event.clear()
-        elif val == 'CONFIGURED':
-            type(self)._event.set()
+class PictureFormats(Enum):
+    X265_CSP_I400 = 1
+    X265_CSP_I420 = 2
+    X265_CSP_I422 = 3
+    X265_CSP_I444 = 4
+
+
+class FrameInformation:
+    frameRecordSize = None
+    depthBytes = None
+    poc = None
+    sliceType = None
+    bScenecut = None
+    satdCost = None
+    numCUsInFrame = None
+    numPartitions = None
+    intra_depth = None
+    intra_chromaModes = None
+    intra_partSizes = None
+    intra_modes = None
+    inter_depth = None
+    inter_modes = None
+    inter_partSize = None
+    inter_mergeFlag = None
+    inter_ref = None
+    wt = None
+
+    def read_with_count(self, file, type, byte, count, conversionType = "int"):
+        arr = []
+        for i in range(0,count):
+            if conversionType == "int":
+                arr.append(int(struct.unpack(type, file.read(byte))[0]))
+            elif conversionType == "string":
+                output = struct.unpack(type, file.read(byte))[0]
+                arr.append(list(output))
+
+        return arr
+
+    def read_info(self, f, read_bytes):
+        self.frameRecordSize = int(struct.unpack('I', f.read(4))[0])
+        self.depthBytes = int(struct.unpack('I', f.read(4))[0])
+        self.poc = int(struct.unpack('i', f.read(4))[0])
+        self.sliceType = int(struct.unpack('i', f.read(4))[0])
+        self.bScenecut = int(struct.unpack('i', f.read(4))[0])
+        self.satdCost = int(struct.unpack('q', f.read(8))[0])
+        self.numCUsInFrame = int(struct.unpack('i', f.read(4))[0])
+        self.numPartitions = int(struct.unpack('i', f.read(4))[0])
+        read_bytes += 36
+
+        if self.sliceType in (SliceTypes.X265_TYPE_I.value, SliceTypes.X265_TYPE_IDR.value):
+            self.intra_depth = self.read_with_count(f, 'B', 1, self.depthBytes)
+            self.intra_chromaModes = self.read_with_count(f, 'B', 1, self.depthBytes)
+            self.intra_partSizes = self.read_with_count(f, 'c', 1, self.depthBytes, "string")
+            self.intra_modes = self.read_with_count(f, 'B', 1, self.numCUsInFrame * self.numPartitions)
+            read_bytes += 3 * self.depthBytes + 1 * self.numCUsInFrame * self.numPartitions
         else:
-            raise ValueError('Bad state value.')
+            format = PictureFormats.X265_CSP_I420.value
+            numDir = 1 if self.sliceType == SliceTypes.X265_TYPE_P.value else 2
+            numPlanes = 1 if format == PictureFormats.X265_CSP_I400.value else 3
 
-    async def is_configured(self):
-        return await type(self)._event.wait()
+            self.inter_depth = self.read_with_count(f, 'B', 1, self.depthBytes)
+            self.inter_modes = self.read_with_count(f, 'B', 1, self.depthBytes)
+            self.inter_partSize = self.read_with_count(f, 'B', 1, self.depthBytes)
+            self.inter_mergeFlag = self.read_with_count(f, 'B', 1, self.depthBytes)
+            self.inter_ref = self.read_with_count(f, 'I', 4, self.numCUsInFrame * 85 * 2 * 8 * numDir)
+            self.wt = self.read_with_count(f, 'i', 4, numDir * numPlanes)
 
-    async def handle_control(self, reader, writer):
-        peer = writer.get_extra_info('peername')
-        hello_msg = "Hello, {0[0]}:{0[1]}!\n".format(peer).encode("utf-8")
-        training_req = "Training, {0[0]}:{0[1]}!\n".format(peer).encode("utf-8")
-        config_req = "Config, {0[0]}:{0[1]}!\n".format(peer).encode("utf-8")
+            read_bytes += 4 * self.depthBytes + 1 * self.numCUsInFrame * self.numPartitions + 4 * numDir * numPlanes
 
-        writer.write(hello_msg)
-
-        while True:
-            data = await reader.read(100)
-            if len(data) > 0:
-                message = data.decode()
-                print('Received:', message)
-                if message.startswith('Hello'):
-                    self.state = 'CONNECTED'
-                    print('New State:', self.state)
-                    writer.write(training_req)
-                elif message.startswith('Training'):
-                    self.state = 'TRAINED'
-                    print('New State:', self.state)
-                    writer.write(config_req)
-                elif message.startswith('Config'):
-                    self.state = 'CONFIGURED'
-                    print('New State:', self.state)
-                elif message.startswith('End'):
-                    self.state = 'IDLE'
-                    print('New State:', self.state)
-                    break
-
-        writer.close()
-
-    async def handle_content(self, reader, writer):
-        peer = writer.get_extra_info('peername')
-
-        await self.is_configured()
-
-        for i in range(1, 10):
-            with open('00001.csv') as csvfile:
-                csv_dict_reader = DictReader(csvfile)
-                for row in csv_dict_reader:
-                    row_data = CSVRow(row)
-                    print('Send: Msg {0}\n'.format(row))
-                    writer.write("Msg {0}\n".format(row).encode("utf-8"))
-                    await asyncio.sleep(1)
-
-        writer.close()
+        return read_bytes
 
 
 class CSVRow:
@@ -189,6 +198,89 @@ class CSVRow:
         self.m_total_frame_time = data[' Total frame time (ms)']
         self.m_avg_wpp = data[' Avg WPP']
         self.m_row_blocks = data[' Row Blocks']
+
+
+class ClientContext:
+    _event = asyncio.Event()
+
+    @property
+    def state(self):
+        return 'IDLE' if not type(self)._event.is_set() else 'CONFIGURED'
+
+    @state.setter
+    def state(self, val):
+        if val == 'IDLE':
+            type(self)._event.clear()
+        elif val == 'CONNECTED':
+            type(self)._event.clear()
+        elif val == 'TRAINED':
+            type(self)._event.clear()
+        elif val == 'CONFIGURED':
+            type(self)._event.set()
+        else:
+            raise ValueError('Bad state value.')
+
+    async def is_configured(self):
+        return await type(self)._event.wait()
+
+    async def handle_control(self, reader, writer):
+        peer = writer.get_extra_info('peername')
+        hello_msg = "Hello, {0[0]}:{0[1]}!\n".format(peer).encode("utf-8")
+        training_req = "Training, {0[0]}:{0[1]}!\n".format(peer).encode("utf-8")
+        config_req = "Config, {0[0]}:{0[1]}!\n".format(peer).encode("utf-8")
+
+        writer.write(hello_msg)
+
+        while True:
+            data = await reader.read(100)
+            if len(data) > 0:
+                message = data.decode()
+                print('Received:', message)
+                if message.startswith('Hello'):
+                    self.state = 'CONNECTED'
+                    print('New State:', self.state)
+                    writer.write(training_req)
+                elif message.startswith('Training'):
+                    self.state = 'TRAINED'
+                    print('New State:', self.state)
+                    writer.write(config_req)
+                elif message.startswith('Config'):
+                    self.state = 'CONFIGURED'
+                    print('New State:', self.state)
+                elif message.startswith('End'):
+                    self.state = 'IDLE'
+                    print('New State:', self.state)
+                    break
+
+        writer.close()
+
+    async def handle_content(self, reader, writer):
+        peer = writer.get_extra_info('peername')
+
+        await self.is_configured()
+
+        # Read the .dat file and send for each frame
+        file_size = os.path.getsize('00001.dat')
+        with open('00001.dat', 'rb') as f:
+            frames = []
+            read_bytes = 0
+            while read_bytes < file_size:
+                frame_i = FrameInformation()
+                read_bytes = frame_i.read_info(f, read_bytes)
+                frames.append(frame_i)
+                print('Send: Msg {0}\n'.format(frame_i.__dict__))
+                writer.write("Msg {0}\n".format(frame_i.__dict__).encode("utf-8"))
+
+        # Uncomment here for reading csv
+        #with open('00001.csv') as csvfile:
+        #    csv_dict_reader = DictReader(csvfile)
+        #    for row in csv_dict_reader:
+        #        row_data = CSVRow(row)
+        #        print('Send: Msg {0}\n'.format(row))
+        #        writer.write("Msg {0}\n".format(row).encode("utf-8"))
+        #        await asyncio.sleep(1)
+
+        writer.close()
 
 
 if __name__ == "__main__":
