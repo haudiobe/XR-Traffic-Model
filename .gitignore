@@ -1,0 +1,7 @@
+.ignore/
+.venv/
+*.csv
+*.zip
+*.pyc
+*.xlsx
+__pycache__/
