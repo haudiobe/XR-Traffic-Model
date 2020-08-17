@@ -1,6 +1,5 @@
 import asyncio
 
-
 async def control_client(loop):
     reader, writer = await asyncio.open_connection('127.0.0.1', 8000, loop=loop)
 
@@ -32,7 +31,7 @@ async def content_client(loop):
     while True:
         data = await reader.read(100)
         if len(data) > 0:
-            print('Received: %r' % data.decode())
+            print('Received: %r' % data)
 
     print('Close the socket')
     writer.close()

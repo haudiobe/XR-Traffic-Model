@@ -3,7 +3,11 @@ from csv import DictReader
 from enum import Enum
 import struct
 import os
+from xrtm_encoder import read_csv_vtraces, Encoder, EncoderConfig, FeedbackStatus, packets
 
+import logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 class SliceTypes(Enum):
     X265_TYPE_IDR = 1
@@ -259,27 +263,19 @@ class ClientContext:
 
         await self.is_configured()
 
-        # Read the .dat file and send for each frame
-        file_size = os.path.getsize('00001.dat')
-        with open('00001.dat', 'rb') as f:
-            frames = []
-            read_bytes = 0
-            while read_bytes < file_size:
-                frame_i = FrameInformation()
-                read_bytes = frame_i.read_info(f, read_bytes)
-                frames.append(frame_i)
-                print('Send: Msg {0}\n'.format(frame_i.__dict__))
-                writer.write("Msg {0}\n".format(frame_i.__dict__).encode("utf-8"))
+        cfg = EncoderConfig()
+        cfg.frame_width = 2048
+        cfg.frame_height = 2048
+        cfg.crf = 28
+        cfg.slices_per_frame = 8
+        feedback_provider = FeedbackStatus()
+        encoder = Encoder(cfg, feedback_provider=feedback_provider)
+        vtrace_csv = "./00020.vtrace.csv"
 
-        # Uncomment here for reading csv
-        #with open('00001.csv') as csvfile:
-        #    csv_dict_reader = DictReader(csvfile)
-        #    for row in csv_dict_reader:
-        #        row_data = CSVRow(row)
-        #        print('Send: Msg {0}\n'.format(row))
-        #        writer.write("Msg {0}\n".format(row).encode("utf-8"))
-        #        await asyncio.sleep(1)
-
+        for vt in read_csv_vtraces(vtrace_csv):
+            for st in encoder.do_frame(vt):
+                for p in packets(st):
+                    writer.write(p)
         writer.close()
 
 

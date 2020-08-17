@@ -33,7 +33,7 @@ CTU_SIZE = 64
 INTRA_CTU_VARIANCE = 0.1
 INTER_CTU_VARIANCE = 0.2
 
-global logger
+logger = logging.getLogger(__name__)
 
 
 class EncoderConfigException(Exception):
@@ -398,6 +398,7 @@ class Encoder:
         h = cfg.frame_height
         self._ctus_per_frame = int(( w * h ) / ( CTU_SIZE * CTU_SIZE ))
         self._ctus_per_slice = int(( h / CTU_SIZE ) * h / ( cfg.slices_per_frame * CTU_SIZE ))
+
         logger.info(f'frame WxH: {w} x {h}')
         logger.info(f'slice height: {int(h / cfg.slices_per_frame)}')
         logger.info(f'ctus p. frame: {self._ctus_per_frame}')
@@ -600,7 +601,15 @@ def plot(vtraces, straces):
     axs[4].legend()
     plt.show()
 
-        
+
+def packets(strace:STrace, mtu=2304):
+    sent = 0
+    step = mtu * 8
+    while sent < strace.bits:
+        yield os.urandom(mtu)
+        sent += step
+
+
 def main(cfg, vtrace_csv, strace_csv, plot_stats=False):
 
     feedback_provider = None
