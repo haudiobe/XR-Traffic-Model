@@ -181,17 +181,68 @@ def encode_inter_slice_1(intra_mean, inter_mean, ctus):
 def encode_inter_slice_X(mean, X):
     return mean * X
 
+def get_slice_ctus(frame_ctus, slices_per_frame, slice_idx):
+    sl = len(frame_ctus) / slices_per_frame
+    start = int(slice_idx * sl)
+    end = int(start + sl)
+    return frame_ctus[start:end]
+
+class InvalidSliceDecision(Exception):
+     def __init__(self, message, slice_type, slice_stats):
+        super().__init__(message)
+        self.slice_type = slice_type
+        self.slice_stats = slice_stats
+
+def encode_inter_slice(vtrace, intra_mean, inter_mean, slice_ctus:List[CTU], refs:List[int]=None):
+    X = 0
+    if refs != None and len(refs) > 0:
+        X = vtrace.poc - refs[0]
+    if X <= 1:
+        s = encode_inter_slice_1(intra_mean, inter_mean, slice_ctus)
+        slice_bits = s.total_size
+        return s.total_size, s
+    else:
+        inter_size = encode_inter_slice_X(inter_mean, X)
+        s = encode_intra_slice(intra_mean, len(slice_ctus))
+        if inter_size >= s.total_size:
+            raise InvalidSliceDecision(str(I_SLICE), I_SLICE, s)
+        else:
+            return inter_size, None
+
 def is_perodic_intra_frame(frame_poc, gop_size, gop_start_poc=0):
     return ((frame_poc - gop_start_poc)) % gop_size == 0
 
 def is_perodic_intra_slice(slice_idx, slices_per_frame, frame_poc, gop_start_poc=0):
     return ((frame_poc - gop_start_poc) % slices_per_frame) == slice_idx
 
-def get_slice_ctus(frame_ctus, slices_per_frame, slice_idx):
-    sl = len(frame_ctus) / slices_per_frame
-    start = int(slice_idx * sl)
-    end = int(start + sl)
-    return frame_ctus[start:end]
+def slice_type_decision(cfg:EncoderConfig, feedback_provider:FeedbackStatus, vtrace:VTrace, slice_idx:int, gop_start_idx:int=0):
+
+    if vtrace.poc == 0:
+        return I_SLICE, None
+
+    elif cfg.error_resilience_mode == ERROR_RESILIENCE_MODE.PERIODIC_FRAME:
+        if is_perodic_intra_frame(vtrace.poc, cfg.gop_size, gop_start_idx):
+            return I_SLICE, None
+        else:
+            return P_SLICE, None
+    
+    elif cfg.error_resilience_mode == ERROR_RESILIENCE_MODE.PERIODIC_SLICE:
+        if is_perodic_intra_slice(slice_idx, cfg.slices_per_frame, vtrace.poc, gop_start_idx):
+            return I_SLICE, None
+        else:
+            return P_SLICE, None
+    
+    elif cfg.error_resilience_mode == ERROR_RESILIENCE_MODE.FEEDBACK_BASED:
+        f = feedback_provider.get_status(slice_idx, vtrace.poc)
+        if f != None:
+            if f.mode == FEEDBACK_MODE.INTRA_REFRESH:
+                return I_SLICE, f
+            elif f.mode == FEEDBACK_MODE.NACK:
+                return P_SLICE, f
+        else:
+            return P_SLICE, None
+
+    raise InvalidSliceDecision('no slice type decision', None, None)
 
 
 def validate_encoder_config(cfg):
@@ -254,12 +305,8 @@ class Encoder:
 
     def do_frame(self, vtrace:VTrace):
         
-        #############################################################
-        # vtrace sanity check
         validates_ctu_distribution(vtrace, raise_exception=True)
 
-        #############################################################
-        # draw frame CTUs, shuffled, taking into account weights from V-trace
         frame_bits = 0
         frame_ctus = draw_ctus(
                 vtrace.ctu_intra_pct,
@@ -272,84 +319,49 @@ class Encoder:
         intra_mean = get_intra_mean(vtrace, self._ctus_per_frame)
         inter_mean = get_inter_mean(vtrace, self._ctus_per_frame)
 
-        #############################################################
-        # slices generator, yields S-traces as we iterate do_frames
         for slice_idx in range(self._cfg.slices_per_frame):
 
             slice_type = None
             slice_bits = 0
             nack_idx = None
             slice_feedback = None
+            qp_new = None
 
-            #############################################################
-            # Based on error resilience mode, take decision on the Slice type
-            if vtrace.poc == 0:
-                slice_type = I_SLICE
+            (slice_type, feedback) = slice_type_decision(self._cfg, self._feedback, vtrace, slice_idx, self._gop_start_poc)
 
-            elif self._cfg.error_resilience_mode == ERROR_RESILIENCE_MODE.PERIODIC_FRAME:
-                if is_perodic_intra_frame(vtrace.poc, self._cfg.gop_size, self._gop_start_poc):
-                    slice_type = I_SLICE
-                    self._gop_start_poc = vtrace.poc
-                else:
-                    slice_type = P_SLICE
-            
-            elif self._cfg.error_resilience_mode == ERROR_RESILIENCE_MODE.PERIODIC_SLICE:
-                if is_perodic_intra_slice(slice_idx, self._cfg.slices_per_frame, vtrace.poc, self._gop_start_poc):
-                    slice_type = I_SLICE
-                else:
-                    slice_type = P_SLICE
+            if self._cfg.error_resilience_mode == ERROR_RESILIENCE_MODE.PERIODIC_FRAME and slice_type == I_SLICE:
+                self._gop_start_poc = vtrace.poc
 
-            elif self._cfg.error_resilience_mode == ERROR_RESILIENCE_MODE.FEEDBACK_BASED:
-                #############################################################
-                # Handle feedback
-                if self._feedback.is_intra_refresh(vtrace.poc, slice_idx):
-                    slice_type = I_SLICE
+            if feedback != None:
+                if feedback.mode == FEEDBACK_MODE.INTRA_REFRESH:
                     slice_feedback = 'INTRA_REFRESH'
-                else:
-                    # feedback manager implementation manages its own window (eg. to deal with subsequent NACKs, out of order feedback, etc ...)
-                    nack_idx = self._feedback.nack_index(vtrace.poc, slice_idx)
-                    slice_type = P_SLICE
-                    if nack_idx != None:
-                        slice_feedback = f'NACK:{nack_idx} X:{vtrace.poc - nack_idx}'
-
-            #############################################################
-            # Now encode the Slice
+                elif feedback.mode == FEEDBACK_MODE.NACK:
+                    nack_idx = feedback.frame_idx
+                    slice_feedback = f'NACK:{nack_idx} X:{vtrace.poc - nack_idx}'
+            
+            
             slice_ctus = get_slice_ctus(frame_ctus, self._cfg.slices_per_frame, slice_idx)
-
             if slice_type == I_SLICE:
                 s = encode_intra_slice(intra_mean, len(slice_ctus))
                 slice_bits = s.total_size
 
             elif slice_type == P_SLICE:
-                
-                if nack_idx == None:
-                    s = encode_inter_slice_1(intra_mean, inter_mean, slice_ctus)
+                try:
+                    refs = None if nack_idx == None else [nack_idx]
+                    slice_bits, s = encode_inter_slice(vtrace, intra_mean, inter_mean, slice_ctus, refs)
+                    if s == None:
+                        s = SliceStats()
+                except InvalidSliceDecision as e:
+                    slice_type = e.slice_type
+                    s = e.slice_stats
                     slice_bits = s.total_size
-                else:
-                    X = vtrace.poc - nack_idx
-                    if X > 1:
-                        inter_size = encode_inter_slice_X(inter_mean, X)
-                        s = encode_intra_slice(intra_mean, len(slice_ctus))
-                        if inter_size < s.total_size:
-                            slice_bits = inter_size
-                            s = None
-                        else:
-                            slice_type = I_SLICE
-                            slice_bits = intra_size
-                    else:
-                        s = encode_inter_slice_1(intra_mean, inter_mean, slice_ctus)
-                        slice_bits = s.total_size
             
-            qp_new = None
             if self._cfg.crf != None:
-                finalbits = None
-                if slice_type == I_SLICE:
-                    (final_bits, qp_new) = apply_crf_adjustment(slice_bits, self._cfg.crf, vtrace.crf_ref, vtrace.intra_qp_ref)
-                else:
-                    (final_bits, qp_new) = apply_crf_adjustment(slice_bits, self._cfg.crf, vtrace.crf_ref, vtrace.inter_qp_ref)
-                slice_bits = final_bits
+                qp_ref = vtrace.intra_qp_ref if slice_type == I_SLICE else vtrace.inter_qp_ref
+                (slice_bits, qp_new) = apply_crf_adjustment(slice_bits, self._cfg.crf, vtrace.crf_ref, qp_ref)
             
             strace = STrace()
+            strace.bits = int(round(slice_bits))
             strace.pts = vtrace.pts
             strace.poc = vtrace.poc
             strace.slice_type = slice_type
@@ -358,12 +370,6 @@ class Encoder:
             elif slice_type == P_SLICE:
                 strace.qp = vtrace.inter_qp_ref
             strace.qp_new = qp_new
-
-            strace.bits = int(round(slice_bits))
-
-            if s == None:
-                # as per specs, encode_inter_slice_X does not return CTU stats
-                s = SliceStats()
             strace.intra_ctu_count = s.intra_ctu_count
             strace.inter_ctu_count = s.inter_ctu_count
             strace.skip_ctu_count = s.skip_ctu_count
@@ -372,13 +378,11 @@ class Encoder:
             strace.inter_ctu_bits = s.inter_ctu_bits
             strace.skip_ctu_bits = s.skip_ctu_bits
             strace.merge_ctu_bits = s.merge_ctu_bits
-            
             strace.intra_mean = float(intra_mean)
             strace.inter_mean = float(inter_mean)
-
             strace.feedback = slice_feedback
 
-            frame_bits += slice_bits
+            frame_bits += strace.bits
             yield strace
 
 

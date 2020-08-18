@@ -7,9 +7,16 @@ class FEEDBACK_MODE(IntEnum):
     NACK = 3
 
 class Feedback:
-    rc_max_bits:int
+    mode:int
     frame_idx:int
     slice_idx:int
+    rc_max_bits:int
+
+    def __init__(self, mode:int, frameidx:int=None, sliceidx:int=None):
+        self.mode = mode
+        self.frame_idx = frameidx
+        self.slice_idx = sliceidx
+
 
 class FeedbackStatus:
     """
@@ -27,12 +34,12 @@ class FeedbackStatus:
         # a method to cleanup when no longer referenced by encoder
         pass
 
-    def is_intra_refresh(self, frame_idx, slice_idx):
-        # a method to retrieve the feedback
-        intra_refresh = random.randint(0,10) < 3
-        return intra_refresh
-
-    def nack_index(self, frameidx, sliceidx):
-        nack = random.randint(1,10)
-        if nack < self._window_size:
-            return max(0, frameidx - nack)
+    def get_status(self, sliceidx, frameidx):
+        r = random.randint(0,100)
+        if r < 25:
+            return Feedback(mode=FEEDBACK_MODE.INTRA_REFRESH, frameidx=frameidx, sliceidx=sliceidx) 
+        if r < 50:
+            nackidx = frameidx - random.randint(1, self._window_size)
+            print(nackidx)
+            return Feedback(mode=FEEDBACK_MODE.NACK, frameidx=max(0, nackidx), sliceidx=sliceidx)
+        return None
