@@ -227,8 +227,9 @@ def slice_type_decision(cfg:EncoderConfig, feedback_provider:FeedbackStatus, vtr
             return P_SLICE, None
     
     elif cfg.error_resilience_mode == ERROR_RESILIENCE_MODE.PERIODIC_SLICE:
-        if is_perodic_intra_slice(slice_idx, cfg.slices_per_frame, vtrace.poc, gop_start_idx):
-            return I_SLICE, None
+        # if is_perodic_intra_slice(slice_idx, cfg.slices_per_frame, vtrace.poc, gop_start_idx):
+        if is_perodic_intra_slice(slice_idx, cfg.slices_per_frame, vtrace.poc, 0):
+              return I_SLICE, None
         else:
             return P_SLICE, None
     
@@ -338,7 +339,6 @@ class Encoder:
                 elif feedback.mode == FEEDBACK_MODE.NACK:
                     nack_idx = feedback.frame_idx
                     slice_feedback = f'NACK:{nack_idx} X:{vtrace.poc - nack_idx}'
-            
             
             slice_ctus = get_slice_ctus(frame_ctus, self._cfg.slices_per_frame, slice_idx)
             if slice_type == I_SLICE:
