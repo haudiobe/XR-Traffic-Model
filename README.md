@@ -78,10 +78,14 @@ Error resilience modes manages the intra coding decision, overriding the picture
 
 #### **DISABLED** `-e=0` or `--erm=0`
 
+> in this mode, feedack is not currently taken into account.
+
 This is the default mode. It runs the encoder without error resilience. Whenever a V-trace has 100% of intra ctus, the corresponding S-traces will be encoded as I-slices, otherwise they get encoded as P-slices.
 
 
 #### **PERIODIC_FRAME** `-e=1` or `--erm=1`
+
+> in this mode, feedack is not currently taken into account.
 
 an intra frame is inserted every *n* frames.
 
@@ -96,6 +100,8 @@ in this mode, feedack is not currently taken into account.
 
 #### **PERIODIC_SLICE** `-e=2` or `--erm=2`
 
+> in this mode, feedack is not currently taken into account.
+
 Only the first frame will be a full intra. Then periodic intra refresh is performed through slices. 
 The intra slice index incremented on each frame: `is_intra_slice = ((frame_poc % slices_per_frame) == slice_idx)`.
 
@@ -103,19 +109,27 @@ The intra slice index incremented on each frame: `is_intra_slice = ((frame_poc %
 python ./xrtm_encoder.py -i ./vtrace.csv -s=4 -e=2
 ```
 
-in this mode, feedack is not currently taken into account.
+
+### Feedback modes
+
+The CLI encoder tool `xrtm_encoder.py` implements a random feedback generator to emulate client feedback.
+
+For *all feedback modes* listed below:
+- the first frame gets encoded as Intra, then all subsequent frames get encoded as Inter, the encoder feedback status signals otherwise.
+- before encoding a new frame (V-trace), the encoder checks for *full intra refresh* feedback and *bitrate control* feedback.
+
+#### NACK feedback `-e=3` or `--erm=3`
+
+NACK feedback signals the client could not decode a specific slice for a specific frame.
+All encoded slices are considered referenceable by the encoder, unless an explicit NACK feedback was received.
 
 
-#### **FEEDBACK_BASED** `-e=3` or `--erm=3`
+#### ACK feedback `-e=4` or `--erm=4`
 
-The first frame gets encoded as Intra, then all subsequent frames get encoded as Inter, unless client feedback status requests otherwise.
+ACK feedback signals the client could successfully decode a specific slice for a specific frame.
+All encoded slices are considered *non-referenceable* by the encoder, unless an explicit ACK feedback was received.
 
-Currently, the reported status is generated randomly at slice level, the encoder handles only `INTRA_REFRESH` and `NACK` feedback status only.
 
-#### *Implementing a client for status reporting* :
-
-the client needs to implement the `xrtm_feedback.FeedbackStatus` interface.
-when the encoder class is instantiated, it receives the FeedbackStatus implementation as a dependency.
 
 
 ### **Rate control mode**

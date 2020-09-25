@@ -1,7 +1,7 @@
 
 import csv
 from typing import List
-
+import random
 import logging
 import argparse
 
@@ -22,7 +22,7 @@ from xrtm.exceptions import (
 )
 
 from xrtm.feedback import (
-    RandomFeedbackProvider,
+    ReferenceableList,
     FeedbackProvider,
     Feedback
 )
@@ -35,11 +35,45 @@ from xrtm.encoder import (
 
 logger = logging.getLogger(__name__)
 
+class RandomFeedbackProvider(FeedbackProvider):
+    
+    def __init__(self, full_intra_ratio:float, referenceable_ratio:float, referenceable_default:bool):
+        self.full_intra_ratio = int(full_intra_ratio * 100)
+        self.referenceable_ratio = int(referenceable_ratio * 100)
+        self.referenceable_default = referenceable_default
+
+    def handle_feedback(self, payload:Feedback):
+        raise NotImplementedError()
+    
+    @property
+    def rc_max_bits(self) -> int:
+        return -1
+
+    def get_full_intra_refresh(self) -> bool:
+        return random.randint(0, 100) < self.full_intra_ratio
+
+    def set_full_intra_refresh(self, idr):
+        pass
+    
+    full_intra_refresh = property(get_full_intra_refresh, set_full_intra_refresh)
+
+    def apply_feedback(self, rpl:ReferenceableList) -> ReferenceableList:
+        for rp in rpl.pics:
+            for s in rp.slices:
+                if s.referenceable == self.referenceable_default and random.randint(0, 100) < self.referenceable_ratio:
+                    s.referenceable = not self.referenceable_default
+        return rpl
+
+
 def main(cfg, vtrace_csv, csv_out, plot_stats=False):
 
     feedback_provider = None
-    if cfg.error_resilience_mode == ErrorResilienceMode.FEEDBACK_BASED:
-        feedback_provider = RandomFeedbackProvider(full_intra_ratio=0.1, referenceable_ratio=0.05, referenceable_default=True)
+    if cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
+        feedback_provider = RandomFeedbackProvider(
+            full_intra_ratio=0.1, # to disable INTRA_REFRESH, set this to 0 
+            referenceable_ratio=0.05, # to disable ACK/NACK, set this to 0 and set default to True
+            referenceable_default=cfg.error_resilience_mode != ErrorResilienceMode.FEEDBACK_BASED_ACK
+        )
     encoder = Encoder(cfg, feedback_provider=feedback_provider)
     vtraces = []
     straces = []
@@ -87,7 +121,8 @@ def parse_args():
                             DISABLE = 0, \
                             PERIODIC_FRAME = 1, \
                             PERIODIC_SLICE = 2, \
-                            FEEDBACK_BASED = 3' , default=0, required=False)
+                            FEEDBACK_BASED (NACK) = 3, \
+                            FEEDBACK_BASED_ACK = 4' , default=0, required=False)
 
     parser.add_argument('-g', '--gop_size', type=int,
                          help='default=-1 - intra refresh period when using --erm=1. -1 just follows v-trace GOP pattern' , default=-1)

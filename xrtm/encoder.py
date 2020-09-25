@@ -52,7 +52,8 @@ class ErrorResilienceMode(IntEnum):
     DISABLED = 0
     PERIODIC_FRAME = 1
     PERIODIC_SLICE = 2
-    FEEDBACK_BASED = 3
+    FEEDBACK_BASED = 3 # feedback INTRA, BITRATE + NACK
+    FEEDBACK_BASED_ACK = 4 # feedback INTRA, BITRATE + ACK
 
 class EncoderConfig:
     # frame config
@@ -204,6 +205,7 @@ def validate_encoder_config(cfg):
         ErrorResilienceMode.PERIODIC_FRAME,
         ErrorResilienceMode.PERIODIC_SLICE,
         ErrorResilienceMode.FEEDBACK_BASED,
+        ErrorResilienceMode.FEEDBACK_BASED_ACK,
     ]
 
     if not cfg.error_resilience_mode in err_modes:
@@ -243,11 +245,12 @@ class Encoder:
         
         validate_encoder_config(cfg)
 
-        if cfg.error_resilience_mode == ErrorResilienceMode.FEEDBACK_BASED and feedback_provider == None:
+        if cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED and feedback_provider == None:
             raise EncoderConfigException('Feedback based error resilience requires a feedback provider')
 
         self._cfg = cfg
         self._feedback = feedback_provider
+        self._default_referenceable_status = cfg.error_resilience_mode != ErrorResilienceMode.FEEDBACK_BASED_ACK
         
         w = cfg.frame_width
         h = cfg.frame_height
@@ -277,9 +280,10 @@ class Encoder:
             if is_perodic_intra_frame(vtrace.poc, self._cfg.gop_size, self._prev_idr_idx):
                 is_idr_frame = True
 
-        elif self._cfg.error_resilience_mode == ErrorResilienceMode.FEEDBACK_BASED:
+        elif self._cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
             is_idr_frame = (vtrace.poc == 0) or self._feedback.full_intra_refresh
-            self._feedback.full_intra_refresh = False
+            if is_idr_frame: 
+                self._feedback.full_intra_refresh = False
             self._rc_max_bits = self._feedback.rc_max_bits
         
         frame = Frame(vtrace.poc)
@@ -300,7 +304,7 @@ class Encoder:
         for slice_idx in range(self._cfg.slices_per_frame):
             
             # @TODO: make referenceable configuration to False, eg. ACK mode
-            S:Slice = Slice(vtrace.pts, vtrace.poc, intra_mean, inter_mean, referenceable=True) 
+            S:Slice = Slice(vtrace.pts, vtrace.poc, intra_mean, inter_mean, referenceable=self._default_referenceable_status) 
 
             # slice type decision, based on error resilience mode
             is_idr_slice = is_idr_frame
@@ -308,7 +312,7 @@ class Encoder:
             if self._cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_SLICE:
                 is_idr_slice = is_perodic_intra_slice(slice_idx, self._cfg.slices_per_frame, vtrace.poc, self._prev_idr_idx)
 
-            elif self._cfg.error_resilience_mode == ErrorResilienceMode.FEEDBACK_BASED:
+            elif self._cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
                 self._refs = self._feedback.apply_feedback(self._refs)
 
             # model slice size based on Vtrace
@@ -332,7 +336,7 @@ class Encoder:
             # sanity check
             assert S.slice_type != None
             assert S.bits_ref > 0
-            
+
             # apply bitrate adjustment model
             S.qp_ref =  vtrace.inter_qp_ref if not is_idr_slice else vtrace.intra_qp_ref
             size_new, qp_new = None, S.qp_ref

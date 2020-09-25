@@ -6,7 +6,7 @@ from enum import Enum, IntEnum
 import logging as logger
 
 from .exceptions import VTraceException
-from abc import ABC, abstractstaticmethod
+from .feedback import Referenceable
 
 XRTM_CSV_PTS = 'pts'
 XRTM_CSV_POC = 'poc'
@@ -194,13 +194,14 @@ class CTU:
     def mode(self):
         return self._mode
 
-class Slice:
+class Slice(Referenceable):
 
     slice_type:SliceType
     refs = List[int]
     stats:SliceStats
+    _referenceable: bool = True
     
-    def __init__(self, pts:int, poc:int, intra_mean:int, inter_mean:int, referenceable:bool=True):
+    def __init__(self, pts:int, poc:int, intra_mean:int, inter_mean:int, referenceable:bool = True):
         self.pts = pts
         self.poc = poc
         self.slice_type = None
@@ -211,12 +212,12 @@ class Slice:
         self.stats = None
         self.intra_mean = intra_mean
         self.inter_mean = inter_mean
-        self.referenceable = referenceable
         self.y_psnr = -1
         self.u_psnr = -1
         self.v_psnr = -1
         self.yuv_psnr = -1
         self.total_time = -1
+        self._referenceable = referenceable
 
     @property
     def bits(self):
@@ -232,11 +233,14 @@ class Slice:
             return -1
         else:
            return self.stats.total_size 
+
+    def get_referenceable_status(self):
+        return self._referenceable
+
+    def set_referenceable_status(self, status:bool):
+        self._referenceable = status
     
-    @property
-    def qp(self):
-        raise NotImplementedError()
-    
+    referenceable = property(get_referenceable_status, set_referenceable_status)
 
 class STrace:
 
