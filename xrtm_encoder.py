@@ -13,8 +13,7 @@ from xrtm.utils import (
 
 from xrtm.models import (
     VTrace,
-    STrace,
-    RefPicList
+    STrace
 )
 
 from xrtm.exceptions import (

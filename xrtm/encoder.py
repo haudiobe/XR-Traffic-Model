@@ -22,7 +22,6 @@ from .models import (
     STrace,
     SliceStats,
     SliceType,
-    RefPicList,
     Slice,
     Frame,
     CTU,
@@ -36,7 +35,8 @@ from .utils import (
 
 from .feedback import (
     FeedbackProvider,
-    FeedbackType
+    FeedbackType,
+    ReferenceableList
 )
 
 
@@ -65,6 +65,34 @@ class EncoderConfig:
     error_resilience_mode:ErrorResilienceMode = ErrorResilienceMode.DISABLED
     gop_size = -1
 
+class RefPicList(ReferenceableList):
+    max_size:int
+    pics:List[Frame]
+    
+    def __init__(self, max_size):
+        self.max_size = max_size
+        self.pics = []
+
+    def add_frame(self, pic:Frame):
+        self.pics.append(pic)
+        self.pics = self.pics[-self.max_size:]
+
+    def slice_refs(self, slice_idx): 
+        for frame in reversed(self.pics):
+            if frame.slices[slice_idx].referenceable:
+                yield frame.poc
+            if frame.slices[slice_idx].slice_type == SliceType.IDR:
+                return
+
+    def set_referenceable_status(self, frame_idx:int, slice_idx:int, status:bool):
+        for frame in reversed(self.pics):
+            if frame.poc >= frame_idx:
+                frame.slices[slice_idx].referenceable = status
+            else:
+                return
+
+    def reset(self):
+        self.pics = []
 
 def draw_ctus(intra:float, inter:float, skip:float, merge:float, size:int=4096, refs=[]):
     return random.choices([
@@ -91,11 +119,18 @@ def get_inter_mean(vtrace, vtrace_ctu_count):
     inter_ctu_count = vtrace_ctu_count * (1 - vtrace.ctu_intra_pct - vtrace.ctu_skip_pct)
     return inter_bits / inter_ctu_count
 
-def apply_crf_adjustment(bits, CRF, CRFref, qp):
+def model_crf_adjustment(bits, CRF, CRFref, qp):
     y = CRFref - CRF
     final_bits = bits * pow(2, y/6)
     QPnew = qp - y
     return final_bits, QPnew
+
+def model_pnsr_adjustment(qp_new, qp_ref, psnr):
+    qp_delta = qp_new - qp_ref
+    return psnr + qp_delta
+
+def model_encoding_time(s:Slice, v:VTrace, slices_per_frame:int):
+    return v.get_encoding_time(s.slice_type) / slices_per_frame
 
 def ctu_bits(mean, variance):
     return random.gauss(mean, variance)
@@ -232,7 +267,7 @@ class Encoder:
         intra_mean = get_intra_mean(vtrace, self._ctus_per_frame)
         inter_mean = get_inter_mean(vtrace, self._ctus_per_frame)
 
-        # frame type decision
+        # frame type decision, based on error resilience mode
         is_idr_frame = False
         
         if self._cfg.error_resilience_mode == ErrorResilienceMode.DISABLED:
@@ -267,7 +302,7 @@ class Encoder:
             # @TODO: make referenceable configuration to False, eg. ACK mode
             S:Slice = Slice(vtrace.pts, vtrace.poc, intra_mean, inter_mean, referenceable=True) 
 
-            # slice type decision
+            # slice type decision, based on error resilience mode
             is_idr_slice = is_idr_frame
             
             if self._cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_SLICE:
@@ -276,7 +311,7 @@ class Encoder:
             elif self._cfg.error_resilience_mode == ErrorResilienceMode.FEEDBACK_BASED:
                 self._refs = self._feedback.apply_feedback(self._refs)
 
-            # estimate slice size based on QPref
+            # model slice size based on Vtrace
             if is_idr_slice:
                 S.stats = encode_intra_slice(intra_mean, self._ctus_per_slice)
                 S.refs = []
@@ -294,10 +329,11 @@ class Encoder:
                     S.stats = s.stats
                     S.slice_type = s.slice_type
 
+            # sanity check
             assert S.slice_type != None
             assert S.bits_ref > 0
             
-            # apply bitrate adjustments
+            # apply bitrate adjustment model
             S.qp_ref =  vtrace.inter_qp_ref if not is_idr_slice else vtrace.intra_qp_ref
             size_new, qp_new = None, S.qp_ref
             
@@ -305,17 +341,25 @@ class Encoder:
                 crf_new = self._cfg.crf if self._cfg.crf else vtrace.crf_ref
                 while size_new > self._rc_max_bits:
                     crf_new += 1
-                    size_new, qp_new = apply_crf_adjustment(S.bits_ref, crf_new, vtrace.crf_ref, S.qp_ref)
+                    size_new, qp_new = model_crf_adjustment(S.bits_ref, crf_new, vtrace.crf_ref, S.qp_ref)
                     if crf_new == 51: 
                         break
                 S.qp_new = qp_new
                 S.bits_new = size_new
 
             elif self._cfg.crf != None:
-                size_new, qp_new = apply_crf_adjustment(S.bits_ref, self._cfg.crf, vtrace.crf_ref, S.qp_ref)
+                size_new, qp_new = model_crf_adjustment(S.bits_ref, self._cfg.crf, vtrace.crf_ref, S.qp_ref)
                 S.qp_new = qp_new
                 S.bits_new = size_new
 
+            # apply PSNR adjustment model
+            for c, psnr_ref in vtrace.get_psnr_ref(S.slice_type).items():
+                psnr_new = model_pnsr_adjustment(S.qp_new, S.qp_ref, psnr_ref)
+                S.__setattr__(c, psnr_new)
+
+            # apply encoding time adjustment model
+            S.total_time = model_encoding_time(S, vtrace, self._cfg.slices_per_frame)
+            
             frame.slices.append(S)
             yield S
 

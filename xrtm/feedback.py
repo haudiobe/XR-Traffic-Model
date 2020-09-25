@@ -3,7 +3,7 @@ from enum import IntEnum
 from abc import ABC, abstractmethod
 from typing import Tuple
 
-from .models import SliceType, RefPicList
+from .models import SliceType
 
 class FeedbackType(IntEnum):
     UNKNOWN = 0
@@ -34,6 +34,13 @@ class Feedback(ABC):
         raise NotImplementedError()
 
 
+class ReferenceableList(ABC):
+    
+    @abstractmethod
+    def set_referenceable_status(self, frame_idx:int, slice_idx:int, status:bool):
+        raise NotImplementedError()
+
+
 class FeedbackProvider(ABC):
 
     @abstractmethod
@@ -56,7 +63,7 @@ class FeedbackProvider(ABC):
         raise NotImplementedError()
     
     @abstractmethod
-    def apply_feedback(self, rpl:RefPicList) -> RefPicList:
+    def apply_feedback(self, rpl:ReferenceableList) -> ReferenceableList:
         raise NotImplementedError()
 
 
@@ -82,7 +89,7 @@ class RandomFeedbackProvider(FeedbackProvider):
     
     full_intra_refresh = property(get_full_intra_refresh, set_full_intra_refresh)
 
-    def apply_feedback(self, rpl:RefPicList) -> RefPicList:
+    def apply_feedback(self, rpl:ReferenceableList) -> ReferenceableList:
         for rp in rpl.pics:
             for s in rp.slices:
                 if s.referenceable == self.referenceable_default and random.randint(0, 100) < self.referenceable_ratio:

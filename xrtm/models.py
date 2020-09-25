@@ -15,16 +15,42 @@ XRTM_CSV_SLICE_TYPE = 'slice_type'
 
 XRTM_CSV_INTRA_QP = 'intra_qp_ref'
 XRTM_CSV_INTRA_BITS = 'intra_total_bits'
+
 XRTM_CSV_INTER_QP = 'inter_qp_ref'
 XRTM_CSV_INTER_BITS = 'inter_total_bits'
+
 XRTM_CSV_CU_INTRA = 'ctu_intra_pct'
 XRTM_CSV_CU_INTER = 'ctu_inter_pct'
 XRTM_CSV_CU_SKIP = 'ctu_skip_pct'
 XRTM_CSV_CU_MERGE = 'ctu_merge_pct'
+
+XRTM_CSV_INTRA_PSNR_Y = 'intra_y_psnr'
+XRTM_CSV_INTRA_PSNR_U = 'intra_u_psnr'
+XRTM_CSV_INTRA_PSNR_V = 'intra_v_psnr'
+XRTM_CSV_INTRA_PSNR_YUV = 'intra_yuv_psnr'
+
+XRTM_CSV_INTER_PSNR_Y = 'inter_y_psnr'
+XRTM_CSV_INTER_PSNR_U = 'inter_u_psnr'
+XRTM_CSV_INTER_PSNR_V = 'inter_v_psnr'
+XRTM_CSV_INTER_PSNR_YUV = 'inter_yuv_psnr'
+
+XRTM_CSV_INTRA_TOTAL_TIME = 'intra_total_time'
+XRTM_CSV_INTER_TOTAL_TIME = 'inter_total_time'
+XRTM_CSV_TOTAL_TIME = 'total_time'
+
+XRTM_CSV_PSNR_Y = 'y_psnr'
+XRTM_CSV_PSNR_U = 'u_psnr'
+XRTM_CSV_PSNR_V = 'v_psnr'
+XRTM_CSV_PSNR_YUV = 'yuv_psnr'
+
 XRTM_CSV_STRACE_BITS = 'bits'
-XRTM_CSV_STRACE_QP_REF = 'qp_ref'
-XRTM_CSV_STRACE_QP_NEW = 'qp_new'
 XRTM_CSV_STRACE_BITS_REF = 'bits_ref'
+XRTM_CSV_STRACE_QP_NEW = 'qp_new'
+XRTM_CSV_STRACE_QP_REF = 'qp_ref'
+XRTM_CSV_INTRA_MEAN = 'intra_mean'
+XRTM_CSV_INTER_MEAN = 'inter_mean'
+XRTM_CSV_REF0 = 'ref0'
+
 XRTM_CSV_INTRA_CTU_COUNT = 'intra_ctu_count'
 XRTM_CSV_INTRA_CTU_BITS = 'intra_ctu_bits'
 XRTM_CSV_INTER_CTU_COUNT = 'inter_ctu_count'
@@ -33,9 +59,6 @@ XRTM_CSV_SKIP_CTU_COUNT = 'skip_ctu_count'
 XRTM_CSV_SKIP_CTU_BITS = 'skip_ctu_bits'
 XRTM_CSV_MERGE_CTU_COUNT = 'merge_ctu_count'
 XRTM_CSV_MERGE_CTU_BITS = 'merge_ctu_bits'
-XRTM_CSV_INTRA_MEAN = 'intra_mean'
-XRTM_CSV_INTER_MEAN = 'inter_mean'
-XRTM_CSV_REF0 = 'ref0'
 
 class SliceType(Enum):
     IDR = 1
@@ -56,7 +79,17 @@ class VTrace:
             XRTM_CSV_CU_INTRA,
             XRTM_CSV_CU_INTER,
             XRTM_CSV_CU_SKIP,
-            XRTM_CSV_CU_MERGE
+            XRTM_CSV_CU_MERGE,
+            XRTM_CSV_INTRA_PSNR_Y,
+            XRTM_CSV_INTRA_PSNR_U,
+            XRTM_CSV_INTRA_PSNR_V,
+            XRTM_CSV_INTRA_PSNR_YUV,
+            XRTM_CSV_INTER_PSNR_Y,
+            XRTM_CSV_INTER_PSNR_U,
+            XRTM_CSV_INTER_PSNR_V,
+            XRTM_CSV_INTER_PSNR_YUV,
+            XRTM_CSV_INTRA_TOTAL_TIME,
+            XRTM_CSV_INTER_TOTAL_TIME
         ]
 
     def __init__(self, data):
@@ -72,6 +105,42 @@ class VTrace:
         self.ctu_skip_pct = float(data[XRTM_CSV_CU_SKIP])/100
         self.ctu_merge_pct = float(data[XRTM_CSV_CU_MERGE])/100
 
+        self.intra_y_psnr = int(data[XRTM_CSV_INTRA_PSNR_Y])
+        self.intra_u_psnr = int(data[XRTM_CSV_INTRA_PSNR_U])
+        self.intra_v_psnr = int(data[XRTM_CSV_INTRA_PSNR_V])
+        self.intra_yuv_psnr = int(data[XRTM_CSV_INTRA_PSNR_YUV])
+        
+        self.inter_y_psnr = int(data[XRTM_CSV_INTER_PSNR_Y])/1000
+        self.inter_u_psnr = int(data[XRTM_CSV_INTER_PSNR_U])/1000
+        self.inter_v_psnr = int(data[XRTM_CSV_INTER_PSNR_V])/1000
+        self.inter_yuv_psnr = int(data[XRTM_CSV_INTER_PSNR_YUV])/1000
+
+        self.intra_total_time = int(data[XRTM_CSV_INTER_TOTAL_TIME])
+        self.inter_total_time = int(data[XRTM_CSV_INTRA_TOTAL_TIME])
+
+    def get_psnr_ref(self, slice_type:SliceType) -> dict:
+        if slice_type == SliceType.IDR:
+            return {
+                XRTM_CSV_PSNR_Y: self.intra_y_psnr,
+                XRTM_CSV_PSNR_U: self.intra_u_psnr,
+                XRTM_CSV_PSNR_V: self.intra_v_psnr,
+                XRTM_CSV_PSNR_YUV: self.intra_yuv_psnr
+            }
+        elif slice_type == SliceType.P:
+            return {
+                XRTM_CSV_PSNR_Y: self.inter_y_psnr,
+                XRTM_CSV_PSNR_U: self.inter_u_psnr,
+                XRTM_CSV_PSNR_V: self.inter_v_psnr,
+                XRTM_CSV_PSNR_YUV: self.inter_yuv_psnr
+            }
+        raise ValueError('invalid argument: slice_type')
+
+    def get_encoding_time(self, slice_type:SliceType):
+        if slice_type == SliceType.IDR:
+            return self.intra_total_time
+        elif slice_type == SliceType.P:
+            return self.inter_total_time
+        raise ValueError('invalid argument: slice_type')
 
 class SliceStats:
 
@@ -143,7 +212,11 @@ class Slice:
         self.intra_mean = intra_mean
         self.inter_mean = inter_mean
         self.referenceable = referenceable
-
+        self.y_psnr = -1
+        self.u_psnr = -1
+        self.v_psnr = -1
+        self.yuv_psnr = -1
+        self.total_time = -1
 
     @property
     def bits(self):
@@ -187,7 +260,12 @@ class STrace:
             XRTM_CSV_MERGE_CTU_BITS,
             XRTM_CSV_INTRA_MEAN,
             XRTM_CSV_INTER_MEAN,
-            XRTM_CSV_REF0
+            XRTM_CSV_REF0,
+            XRTM_CSV_PSNR_Y,
+            XRTM_CSV_PSNR_U,
+            XRTM_CSV_PSNR_V,
+            XRTM_CSV_PSNR_YUV,
+            XRTM_CSV_TOTAL_TIME
         ]
     
 
@@ -217,10 +295,12 @@ class STrace:
             XRTM_CSV_INTRA_MEAN: s.intra_mean,
             XRTM_CSV_INTER_MEAN: s.inter_mean,
             XRTM_CSV_REF0: s.refs,
+            XRTM_CSV_PSNR_Y: s.y_psnr,
+            XRTM_CSV_PSNR_U: s.u_psnr,
+            XRTM_CSV_PSNR_V: s.v_psnr,
+            XRTM_CSV_PSNR_YUV: s.yuv_psnr,
             **ctu_stats
         }
-
-
 
 class Frame:
 
@@ -230,36 +310,6 @@ class Frame:
     def __init__(self, poc:int):
         self.poc = poc
         self.slices = []
-
-
-class RefPicList:
-    max_size:int
-    pics:List[Frame]
-    
-    def __init__(self, max_size):
-        self.max_size = max_size
-        self.pics = []
-
-    def add_frame(self, pic:Frame):
-        self.pics.append(pic)
-        self.pics = self.pics[-self.max_size:]
-
-    def reset(self):
-        self.pics = []
-    
-    def slice_refs(self, slice_idx): 
-        for frame in reversed(self.pics):
-            if frame.slices[slice_idx].referenceable:
-                yield frame.poc
-            if frame.slices[slice_idx].slice_type == SliceType.IDR:
-                return
-
-    def set_non_referenceable(self, frame_idx, slice_idx):
-        for frame in reversed(self.pics):
-            if frame.poc >= frame_idx:
-                frame.slices[slice_idx].referenceable = False
-            else:
-                return
 
 
 def validates_ctu_distribution(vt:VTrace, raise_exception=True) -> bool:
