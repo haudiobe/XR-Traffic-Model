@@ -141,7 +141,7 @@ def parse_args():
     cfg.slices_per_frame = args.slices
     
     # rc config
-    cfg.crf = args.crf
+    cfg.crf = -1 if args.crf == None else args.crf
 
     # error resilience
     cfg.error_resilience_mode = args.erm

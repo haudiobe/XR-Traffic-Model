@@ -92,7 +92,10 @@ class VTrace:
             XRTM_CSV_INTER_TOTAL_TIME
         ]
 
-    def __init__(self, data):
+    def __init__(self, data=None):
+        if data == None:
+            return
+
         self.pts = int(data[XRTM_CSV_PTS])
         self.poc = int(data[XRTM_CSV_POC])
         self.crf_ref = float(data[XRTM_CSV_CRF])
@@ -141,6 +144,10 @@ class VTrace:
         elif slice_type == SliceType.P:
             return self.inter_total_time
         raise ValueError('invalid argument: slice_type')
+    
+    @property
+    def is_full_intra(self):
+        return self.ctu_intra_pct == 1.
 
 class SliceStats:
 
@@ -310,11 +317,12 @@ class Frame:
 
     poc:int
     slices:List[Slice]
+    is_idr_frame:bool
 
-    def __init__(self, poc:int):
+    def __init__(self, poc:int, idr:bool = False):
         self.poc = poc
         self.slices = []
-
+        self.is_idr_frame = idr
 
 def validates_ctu_distribution(vt:VTrace, raise_exception=True) -> bool:
     total = vt.ctu_intra_pct + vt.ctu_inter_pct + vt.ctu_skip_pct + vt.ctu_merge_pct

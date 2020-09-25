@@ -60,8 +60,7 @@ class EncoderConfig:
     frame_width:int = 2048
     frame_height:int = 2048
     slices_per_frame:int = 8
-    # rc config
-    crf:int # None
+    crf:int = -1
     # error resilience
     error_resilience_mode:ErrorResilienceMode = ErrorResilienceMode.DISABLED
     gop_size = -1
@@ -70,13 +69,16 @@ class RefPicList(ReferenceableList):
     max_size:int
     pics:List[Frame]
     
-    def __init__(self, max_size):
+    def __init__(self, max_size:int=16):
         self.max_size = max_size
         self.pics = []
 
     def add_frame(self, pic:Frame):
-        self.pics.append(pic)
-        self.pics = self.pics[-self.max_size:]
+        if pic.is_idr_frame:
+            self.pics = [pic]
+        else:
+            self.pics.append(pic)
+            self.pics = self.pics[-self.max_size:]
 
     def slice_refs(self, slice_idx): 
         for frame in reversed(self.pics):
@@ -87,9 +89,8 @@ class RefPicList(ReferenceableList):
 
     def set_referenceable_status(self, frame_idx:int, slice_idx:int, status:bool):
         for frame in reversed(self.pics):
-            if frame.poc >= frame_idx:
+            if frame.poc == frame_idx:
                 frame.slices[slice_idx].referenceable = status
-            else:
                 return
 
     def reset(self):
@@ -241,6 +242,10 @@ class Encoder:
     _refs:RefPicList = RefPicList(max_size=MAX_REFS)
     _rc_max_bits:int = -1
 
+    @property
+    def refs_list_0(self):
+        return self._refs
+
     def __init__(self, cfg:EncoderConfig, feedback_provider:FeedbackProvider=None):
         
         validate_encoder_config(cfg)
@@ -274,7 +279,7 @@ class Encoder:
         is_idr_frame = False
         
         if self._cfg.error_resilience_mode == ErrorResilienceMode.DISABLED:
-            is_idr_frame = vtrace.ctu_intra_pct == 1.
+            is_idr_frame = vtrace.is_full_intra
 
         elif self._cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_FRAME:
             if is_perodic_intra_frame(vtrace.poc, self._cfg.gop_size, self._prev_idr_idx):
@@ -286,10 +291,9 @@ class Encoder:
                 self._feedback.full_intra_refresh = False
             self._rc_max_bits = self._feedback.rc_max_bits
         
-        frame = Frame(vtrace.poc)
+        frame = Frame(vtrace.poc, idr=is_idr_frame)
 
-        if is_idr_frame:
-            self._refs.reset()
+        if frame.is_idr_frame:
             self._prev_idr_idx = vtrace.poc
             frame.ctu_map = draw_ctus( 100, 0, 0, 0, size = self._ctus_per_frame )
         else:
@@ -305,21 +309,31 @@ class Encoder:
             
             # @TODO: make referenceable configuration to False, eg. ACK mode
             S:Slice = Slice(vtrace.pts, vtrace.poc, intra_mean, inter_mean, referenceable=self._default_referenceable_status) 
-
-            # slice type decision, based on error resilience mode
-            is_idr_slice = is_idr_frame
             
+            # slice type decision, based on error resilience mode
+            if self._cfg.error_resilience_mode == ErrorResilienceMode.DISABLED:
+                if frame.is_idr_frame:
+                    S.slice_type = SliceType.IDR
+                else:
+                    S.slice_type = SliceType.P
+                    
             if self._cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_SLICE:
-                is_idr_slice = is_perodic_intra_slice(slice_idx, self._cfg.slices_per_frame, vtrace.poc, self._prev_idr_idx)
+                if is_perodic_intra_slice(slice_idx, self._cfg.slices_per_frame, vtrace.poc, self._prev_idr_idx):
+                    S.slice_type = SliceType.IDR
+                else:
+                    S.slice_type = SliceType.P
 
             elif self._cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
+                if frame.is_idr_frame:
+                    S.slice_type = SliceType.IDR
+                else:
+                    S.slice_type = SliceType.P
                 self._refs = self._feedback.apply_feedback(self._refs)
 
             # model slice size based on Vtrace
-            if is_idr_slice:
+            if S.slice_type == SliceType.IDR:
                 S.stats = encode_intra_slice(intra_mean, self._ctus_per_slice)
                 S.refs = []
-                S.slice_type = SliceType.IDR
             else:
                 try:
                     slice_ctus = get_slice_ctus(frame.ctu_map, self._cfg.slices_per_frame, slice_idx)
@@ -338,7 +352,7 @@ class Encoder:
             assert S.bits_ref > 0
 
             # apply bitrate adjustment model
-            S.qp_ref =  vtrace.inter_qp_ref if not is_idr_slice else vtrace.intra_qp_ref
+            S.qp_ref =  vtrace.inter_qp_ref if not S.slice_type == SliceType.IDR else vtrace.intra_qp_ref
             size_new, qp_new = None, S.qp_ref
             
             if self._rc_max_bits > 0 :
@@ -351,7 +365,7 @@ class Encoder:
                 S.qp_new = qp_new
                 S.bits_new = size_new
 
-            elif self._cfg.crf != None:
+            elif self._cfg.crf >= 0:
                 size_new, qp_new = model_crf_adjustment(S.bits_ref, self._cfg.crf, vtrace.crf_ref, S.qp_ref)
                 S.qp_new = qp_new
                 S.bits_new = size_new
