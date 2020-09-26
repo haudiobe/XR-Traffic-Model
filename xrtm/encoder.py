@@ -286,9 +286,9 @@ class Encoder:
                 is_idr_frame = True
 
         elif self._cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
-            is_idr_frame = (vtrace.poc == 0) or self._feedback.full_intra_refresh
+            is_idr_frame = (vtrace.poc == 0) or self._feedback.intra_refresh_status()
             if is_idr_frame: 
-                self._feedback.full_intra_refresh = False
+                self._feedback.clear_intra_refresh_status()
             self._rc_max_bits = self._feedback.rc_max_bits
         
         frame = Frame(vtrace.poc, idr=is_idr_frame)

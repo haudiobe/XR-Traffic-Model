@@ -49,14 +49,12 @@ class RandomFeedbackProvider(FeedbackProvider):
     def rc_max_bits(self) -> int:
         return -1
 
-    def get_full_intra_refresh(self) -> bool:
+    def intra_refresh_status(self) -> bool:
         return random.randint(0, 100) < self.full_intra_ratio
 
-    def set_full_intra_refresh(self, idr):
+    def clear_intra_refresh_status(self):
         pass
     
-    full_intra_refresh = property(get_full_intra_refresh, set_full_intra_refresh)
-
     def apply_feedback(self, rpl:ReferenceableList) -> ReferenceableList:
         for rp in rpl.pics:
             for s in rp.slices:
