@@ -50,6 +50,7 @@ XRTM_CSV_STRACE_QP_REF = 'qp_ref'
 XRTM_CSV_INTRA_MEAN = 'intra_mean'
 XRTM_CSV_INTER_MEAN = 'inter_mean'
 XRTM_CSV_REF0 = 'ref0'
+XRTM_CSV_VIEWIDX = 'view'
 
 XRTM_CSV_INTRA_CTU_COUNT = 'intra_ctu_count'
 XRTM_CSV_INTRA_CTU_BITS = 'intra_ctu_bits'
@@ -59,6 +60,8 @@ XRTM_CSV_SKIP_CTU_COUNT = 'skip_ctu_count'
 XRTM_CSV_SKIP_CTU_BITS = 'skip_ctu_bits'
 XRTM_CSV_MERGE_CTU_COUNT = 'merge_ctu_count'
 XRTM_CSV_MERGE_CTU_BITS = 'merge_ctu_bits'
+
+
 
 class SliceType(Enum):
     IDR = 1
@@ -120,6 +123,7 @@ class VTrace:
 
         self.intra_total_time = int(data[XRTM_CSV_INTER_TOTAL_TIME])
         self.inter_total_time = int(data[XRTM_CSV_INTRA_TOTAL_TIME])
+
 
     def get_psnr_ref(self, slice_type:SliceType) -> dict:
         if slice_type == SliceType.IDR:
@@ -202,21 +206,14 @@ class CTU:
         return self._mode
 
 class Slice(Referenceable):
-
-    slice_type:SliceType
-    refs = List[int]
-    stats:SliceStats
-    _referenceable: bool = True
     
-    def __init__(self, pts:int, poc:int, intra_mean:int, inter_mean:int, referenceable:bool = True):
+    def __init__(self, pts:int, poc:int, slice_idx:int, intra_mean:int, inter_mean:int, referenceable:bool = True, view_idx:int = 0):
         self.pts = pts
         self.poc = poc
-        self.slice_type = None
+        self.slice_idx = slice_idx
         self.qp_ref = -1
         self.bits_new = -1
         self.qp_new = -1
-        self.refs = []
-        self.stats = None
         self.intra_mean = intra_mean
         self.inter_mean = inter_mean
         self.y_psnr = -1
@@ -224,8 +221,12 @@ class Slice(Referenceable):
         self.v_psnr = -1
         self.yuv_psnr = -1
         self.total_time = -1
+        self.stats = None
+        self.slice_type = None
+        self.refs = []
+        self.view_idx = view_idx
         self._referenceable = referenceable
-
+    
     @property
     def bits(self):
         if self.bits_new < 0:
@@ -239,7 +240,7 @@ class Slice(Referenceable):
             assert self.bits_new == -1
             return -1
         else:
-           return self.stats.total_size 
+           return self.stats.total_size
 
     def get_referenceable_status(self):
         return self._referenceable
@@ -248,6 +249,7 @@ class Slice(Referenceable):
         self._referenceable = status
     
     referenceable = property(get_referenceable_status, set_referenceable_status)
+
 
 class STrace:
 
@@ -276,7 +278,8 @@ class STrace:
             XRTM_CSV_PSNR_U,
             XRTM_CSV_PSNR_V,
             XRTM_CSV_PSNR_YUV,
-            XRTM_CSV_TOTAL_TIME
+            XRTM_CSV_TOTAL_TIME,
+            XRTM_CSV_VIEWIDX
         ]
     
 
@@ -310,6 +313,7 @@ class STrace:
             XRTM_CSV_PSNR_U: s.u_psnr,
             XRTM_CSV_PSNR_V: s.v_psnr,
             XRTM_CSV_PSNR_YUV: s.yuv_psnr,
+            XRTM_CSV_VIEWIDX: s.view_idx,
             **ctu_stats
         }
 
@@ -319,10 +323,11 @@ class Frame:
     slices:List[Slice]
     is_idr_frame:bool
 
-    def __init__(self, poc:int, idr:bool = False):
+    def __init__(self, poc:int, idr:bool = False, view_idx:int = 0):
         self.poc = poc
         self.slices = []
         self.is_idr_frame = idr
+        self.view_idx = view_idx
 
 def validates_ctu_distribution(vt:VTrace, raise_exception=True) -> bool:
     total = vt.ctu_intra_pct + vt.ctu_inter_pct + vt.ctu_skip_pct + vt.ctu_merge_pct

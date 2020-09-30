@@ -139,7 +139,7 @@ def ctu_bits(mean, variance):
 
 def encode_intra_slice(intra_mean, ctu_count):
     s = SliceStats()
-    for ctu in range(ctu_count):
+    for _ in range(ctu_count):
         s.add_intra_ctu(ctu_bits(intra_mean, INTRA_CTU_VARIANCE))
     return s
 
@@ -246,7 +246,7 @@ class Encoder:
     def refs_list_0(self):
         return self._refs
 
-    def __init__(self, cfg:EncoderConfig, feedback_provider:FeedbackProvider=None):
+    def __init__(self, cfg:EncoderConfig, feedback_provider:FeedbackProvider=None, view_idx:int=0):
         
         validate_encoder_config(cfg)
 
@@ -254,6 +254,7 @@ class Encoder:
             raise EncoderConfigException('Feedback based error resilience requires a feedback provider')
 
         self._cfg = cfg
+        self._view_idx = view_idx
         self._feedback = feedback_provider
         self._default_referenceable_status = cfg.error_resilience_mode != ErrorResilienceMode.FEEDBACK_BASED_ACK
         
@@ -291,7 +292,7 @@ class Encoder:
                 self._feedback.clear_intra_refresh_status()
             self._rc_max_bits = self._feedback.rc_max_bits
         
-        frame = Frame(vtrace.poc, idr=is_idr_frame)
+        frame = Frame(vtrace.poc, idr=is_idr_frame, view_idx=self._view_idx)
 
         if frame.is_idr_frame:
             self._prev_idr_idx = vtrace.poc
@@ -308,7 +309,7 @@ class Encoder:
         for slice_idx in range(self._cfg.slices_per_frame):
             
             # @TODO: make referenceable configuration to False, eg. ACK mode
-            S:Slice = Slice(vtrace.pts, vtrace.poc, intra_mean, inter_mean, referenceable=self._default_referenceable_status) 
+            S:Slice = Slice(vtrace.pts, vtrace.poc, slice_idx, intra_mean, inter_mean, referenceable=self._default_referenceable_status, view_idx=self._view_idx) 
             
             # slice type decision, based on error resilience mode
             if self._cfg.error_resilience_mode == ErrorResilienceMode.DISABLED:
@@ -334,6 +335,7 @@ class Encoder:
             if S.slice_type == SliceType.IDR:
                 S.stats = encode_intra_slice(intra_mean, self._ctus_per_slice)
                 S.refs = []
+            
             else:
                 try:
                     slice_ctus = get_slice_ctus(frame.ctu_map, self._cfg.slices_per_frame, slice_idx)
@@ -382,3 +384,4 @@ class Encoder:
             yield S
 
         self._refs.add_frame(frame)
+        

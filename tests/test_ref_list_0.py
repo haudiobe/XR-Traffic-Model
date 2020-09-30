@@ -4,8 +4,8 @@ import unittest
 from xrtm.encoder import RefPicList, Encoder, EncoderConfig, ErrorResilienceMode
 from xrtm.models import Frame, SliceType, Slice
 
-def _slice(i, referenceable, slice_type):
-    s = Slice(i, i, 0, 0, referenceable=referenceable)
+def _slice(i, referenceable, slice_type:SliceType):
+    s = Slice(i, i, 0, 0, 0, referenceable=referenceable)
     s.slice_type = slice_type
     f = Frame(poc=i)
     f.slices.append(s)
@@ -71,7 +71,7 @@ class TestRefPicList(unittest.TestCase):
         
         while i < 50:
             f = Frame(poc=i, idr= i==0)
-            f.slices.append(Slice(i, i, 0, 0, referenceable=True))
+            f.slices.append(Slice(i, i, 0, 0, 0, referenceable=True))
             rpl.add_frame(f)
             i += 1
 

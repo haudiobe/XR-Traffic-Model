@@ -17,13 +17,11 @@ from xrtm.models import (
 )
 
 from xrtm.exceptions import (
-    VTraceException,
     EncoderConfigException
 )
 
 from xrtm.feedback import (
-    ReferenceableList,
-    FeedbackProvider,
+    RandomFeedbackGenerator,
     Feedback
 )
 
@@ -33,46 +31,37 @@ from xrtm.encoder import (
     ErrorResilienceMode
 )
 
+from xrtm.stereo import (
+    StereoEncoder,
+    RandomStereoFeedback
+)
+
 logger = logging.getLogger(__name__)
 
-class RandomFeedbackProvider(FeedbackProvider):
-    
-    def __init__(self, full_intra_ratio:float, referenceable_ratio:float, referenceable_default:bool):
-        self.full_intra_ratio = int(full_intra_ratio * 100)
-        self.referenceable_ratio = int(referenceable_ratio * 100)
-        self.referenceable_default = referenceable_default
 
-    def handle_feedback(self, payload:Feedback):
-        raise NotImplementedError()
-    
-    @property
-    def rc_max_bits(self) -> int:
-        return -1
-
-    def intra_refresh_status(self) -> bool:
-        return random.randint(0, 100) < self.full_intra_ratio
-
-    def clear_intra_refresh_status(self):
-        pass
-    
-    def apply_feedback(self, rpl:ReferenceableList) -> ReferenceableList:
-        for rp in rpl.pics:
-            for s in rp.slices:
-                if s.referenceable == self.referenceable_default and random.randint(0, 100) < self.referenceable_ratio:
-                    s.referenceable = not self.referenceable_default
-        return rpl
-
-
-def main(cfg, vtrace_csv, csv_out, plot_stats=False):
-
+def stereo_encoder(cfg):
     feedback_provider = None
     if cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
-        feedback_provider = RandomFeedbackProvider(
-            full_intra_ratio=0.1, # to disable INTRA_REFRESH, set this to 0 
-            referenceable_ratio=0.05, # to disable ACK/NACK, set this to 0 and set default to True
+        feedback_provider = RandomStereoFeedback(
+            full_intra_ratio=0.1,
+            referenceable_ratio=0.05,
             referenceable_default=cfg.error_resilience_mode != ErrorResilienceMode.FEEDBACK_BASED_ACK
         )
-    encoder = Encoder(cfg, feedback_provider=feedback_provider)
+    return StereoEncoder(cfg, feedback=feedback_provider)
+
+def mono_encoder(cfg):
+    feedback_provider = None
+    if cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
+        feedback_provider = RandomFeedbackGenerator(
+            full_intra_ratio=0.1,
+            referenceable_ratio=0.05,
+            referenceable_default=cfg.error_resilience_mode != ErrorResilienceMode.FEEDBACK_BASED_ACK
+        )
+    return Encoder(cfg, feedback_provider=feedback_provider)
+
+def main(cfg, vtrace_csv, csv_out, plot_stats=False, stereo=False):
+
+    encoder = mono_encoder(cfg) if not stereo else stereo_encoder(cfg)
     vtraces = []
     straces = []
 
@@ -88,7 +77,9 @@ def main(cfg, vtrace_csv, csv_out, plot_stats=False):
                 writer.writerow(strace)
                 straces.append(strace)
     
-    if plot_stats:
+    if stereo and plot_stats:
+        logger.critical('staggered slices, --plot option ignored')
+    elif plot_stats:
         plot(vtraces, straces, cfg.slices_per_frame)
 
 
@@ -124,6 +115,8 @@ def parse_args():
 
     parser.add_argument('-g', '--gop_size', type=int,
                          help='default=-1 - intra refresh period when using --erm=1. -1 just follows v-trace GOP pattern' , default=-1)
+
+    parser.add_argument('--stereo', action="store_true", default=False, help='run 2 encoders simultaneously')
 
     parser.add_argument('--plot', action="store_true", default=False, help='run the plot function after generating the output csv')
     
@@ -166,7 +159,7 @@ if __name__ == '__main__':
         csv_out = args.s_trace
 
     try:
-        main(cfg, args.v_trace, csv_out, plot_stats=args.plot)
+        main(cfg, args.v_trace, csv_out, plot_stats=args.plot, stereo=args.stereo)
     except EncoderConfigException as ee:
         logger.critical(ee)
     except FileNotFoundError as fe:

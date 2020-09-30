@@ -141,6 +141,12 @@ the model encoder currently only supports CRF
 This option generates S-trace with adjusted bit size that takes into account the specified target CRF.
 When unspecified, the CRF from V-trace is used and remains unchanged. 
 
+### Multiple encoders
+
+`--stereo`
+
+Generate staggered slices from 2 independant encoders.
+
 
 ### **Misc options**
 
@@ -149,6 +155,9 @@ When unspecified, the CRF from V-trace is used and remains unchanged.
 default=0 - set log level. 0:CRITICAL, 1:INFO, 2:DEBUG
 
 
-`--plot`
+`--plot`, seed=seed
+import random
+
+
 
 plot V-trace and S-trace stats using matplotlib
