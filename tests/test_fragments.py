@@ -1,7 +1,7 @@
 import unittest
 import random
 from xrtm.models import Slice, SliceType
-from xrtm.packets import pack_slice, unpack_slice, MediaPacketHeader, MediaPacketType
+from xrtm.packets import pack_slice, unpack_slice, MediaPacketHeader, MediaPacket, MediaPacketType
 
 def _slice(byte_size, pts=0):
     s = Slice(poc=0, pts=pts)
@@ -34,7 +34,7 @@ class TestMediaPacketHeader(unittest.TestCase):
                 self.assertEqual(l, hdr.last)
                 self.assertEqual(hdr.seqnum, seqnum)
                 self.assertEqual(hdr.slice_type, s.slice_type)
-                
+
 
     # @unittest.skip("failling")
     def test_encode_decode(self):
@@ -81,6 +81,15 @@ class TestPackSlice(unittest.TestCase):
             s = _slice(1500)
             _ = [*pack_slice(12345, s, max_size)]
 
+    def test_slice_size_too_small(self):
+        max_size = 1500
+        seqnum = random.randint(12345, 67890)
+        s = _slice(1)
+        # Slice.encode() expected to be more than 1 byte,
+        # must raise an assertion error 
+        with self.assertRaises(AssertionError):
+            _ = [*pack_slice(seqnum, s, max_size)]
+            
     def test_single_unit(self):
         max_size = 1500
         seqnum = random.randint(12345, 67890)
@@ -147,6 +156,7 @@ class TestPackSlice(unittest.TestCase):
 
 
 def _packets(n=1, mtu=1500):
+    # covered byt TestPackSlice
     max_payload_size = mtu - MediaPacketHeader.HEADER_SIZE
     seqnum = random.randint(0, 12345)
     pts = random.randint(12345, 67890)
@@ -160,41 +170,99 @@ def _packets(n=1, mtu=1500):
         return [*pack_slice(seqnum, s, mtu)], s
 
 
-
 class TestUnpackSlice(unittest.TestCase):
 
-    def test_single_unit(self):
+    def test_unpack_single_unit(self):
         p, stx = _packets(1)
+        self.assertEqual(len(p), 1)
         srx = unpack_slice(*p)
         self.assertEqual(stx.pts, srx.pts)
 
-    def test_fragmented_units(self):
+    def test_unpack_fragmented_units(self):
         p, stx = _packets(10)
         srx = unpack_slice(*p)
         for k in Slice.keys:
             self.assertEqual(getattr(stx, k), getattr(srx, k))
 
-    def test_fragmented_unordered(self):
-        p, stx = _packets(10)
+    def test_unpack_unordered_raises(self):
+        p, _ = _packets(10)
 
         with self.assertRaises(ValueError):
             p.reverse()
-            srx = unpack_slice(*p)
-            self.assertEqual(stx.pts, srx.pts)
+            _ = unpack_slice(*p)
 
+        p, _ = _packets(99)
         with self.assertRaises(ValueError):
-            p.append(p.pop(0))
-            srx = unpack_slice(*p)
-            self.assertEqual(stx.pts, srx.pts)
+            p.append(p.pop(55))
+            _ = unpack_slice(*p)
 
-    def test_fragmented_missing(self):
-        pass
+
+    def test_unpack_missing_raises(self):
+        p, _ = _packets(9)
+        _ = unpack_slice(*p)
+        
+        # first missing
+        p, _ = _packets(9)
+        with self.assertRaises(ValueError):
+            p.pop(0)
+            _ = unpack_slice(*p)
+        # last missing
+        p, _ = _packets(9)
+        with self.assertRaises(ValueError):
+            p.pop(8)
+            _ = unpack_slice(*p)
+        # missing mid packet
+        p, _ = _packets(9)
+        with self.assertRaises(ValueError):
+            p.pop(4)
+            _ = unpack_slice(*p)
+
 
     def test_fragmented_duplicated(self):
-        pass
+        p, _ = _packets(9)
+        p = p[:5] + [p[5]] + p[5:]
+
+        with self.assertRaises(ValueError):
+            _ = unpack_slice(*p)
 
     def test_fragmented_invalid(self):
-        pass
+        seqnum = random.randint(0, 12345)
+        pts = random.randint(12345, 67890)
+        s = _slice(5555, pts=pts)
+        
+        # single fragment
+        p = MediaPacket(MediaPacketHeader.from_slice(seqnum, s, MediaPacketType.FRAGMENTED_UNIT, first=True, last=True), bytes())
+        with self.assertRaises(ValueError):
+            _ = unpack_slice(p)
+        p = MediaPacket(MediaPacketHeader.from_slice(seqnum, s, MediaPacketType.FRAGMENTED_UNIT, first=False, last=False), bytes())
+        with self.assertRaises(ValueError):
+            _ = unpack_slice(p)
+        p = MediaPacket(MediaPacketHeader.from_slice(seqnum, s, MediaPacketType.FRAGMENTED_UNIT, first=True, last=False), bytes())
+        with self.assertRaises(ValueError):
+            _ = unpack_slice(p)
+        p = MediaPacket(MediaPacketHeader.from_slice(seqnum, s, MediaPacketType.FRAGMENTED_UNIT, first=False, last=True), bytes())
+        with self.assertRaises(ValueError):
+            _ = unpack_slice(p)
+
+        # malformed packets
+        p = [MediaPacket(h, bytes()) for h in [
+            MediaPacketHeader.from_slice(seqnum, s, MediaPacketType.FRAGMENTED_UNIT, first=True, last=True),
+            MediaPacketHeader.from_slice(seqnum+1, s, MediaPacketType.FRAGMENTED_UNIT, first=True, last=True)
+        ]]
+        with self.assertRaises(ValueError):
+            _ = unpack_slice(*p)
+
+        # mixed up fragments
+        p = [MediaPacket(h, bytes()) for h in [
+            MediaPacketHeader.from_slice(seqnum, s, MediaPacketType.FRAGMENTED_UNIT, first=True, last=False),
+            MediaPacketHeader.from_slice(seqnum+1, s, MediaPacketType.SINGLE_UNIT, first=False, last=False),
+            MediaPacketHeader.from_slice(seqnum+2, s, MediaPacketType.FRAGMENTED_UNIT, first=False, last=True)
+        ]]
+        with self.assertRaises(ValueError):
+            _ = unpack_slice(*p)
+    
+   
+
 
 
 

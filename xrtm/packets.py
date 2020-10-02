@@ -193,9 +193,13 @@ def defrag(packets:List[MediaPacket]) -> Slice:
             assert p.packet_type == MediaPacketType.FRAGMENTED_UNIT
             if i == 0:
                 assert p.first
+                assert p.first != p.last
                 seqnum = p.seqnum
             elif i == (len(packets)-1):
                 assert p.last
+            else:
+                assert not p.first
+                assert not p.last
             assert p.seqnum == (seqnum + i)
             data += p.payload
         return Slice.decode(data)

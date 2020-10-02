@@ -127,7 +127,6 @@ class VTrace:
         self.intra_total_time = int(data[XRTM_CSV_INTER_TOTAL_TIME])
         self.inter_total_time = int(data[XRTM_CSV_INTRA_TOTAL_TIME])
 
-
     def get_psnr_ref(self, slice_type:SliceType) -> dict:
         if slice_type == SliceType.IDR:
             return {
@@ -210,6 +209,7 @@ class CTU:
 
 class Slice(Referenceable):
 
+    # keys to be encoded to / decoded from bytes
     keys = ('pts', 'poc', 'slice_idx', 'total_time', 'slice_type', 'refs', 'view_idx')
 
     def __init__(self, pts:int, poc:int, slice_type:SliceType = None, slice_idx:int=0, intra_mean:float=0, inter_mean:float=0, referenceable:bool = True, view_idx:int = 0, **noop):

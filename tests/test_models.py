@@ -48,3 +48,18 @@ class TestSlice(unittest.TestCase):
         srx = Slice.decode(data)
         for k in Slice.keys:
             self.assertEqual(getattr(stx, k), getattr(srx, k))
+
+    def test_size_assertion(self):
+        stx = Slice(
+            12345, 
+            67890, 
+            slice_idx=8,
+            inter_mean=1.2345,
+            intra_mean=6.7890,
+            view_idx=9,
+            slice_type=SliceType.IDR
+        )
+        stx.bits_new = 8
+        with self.assertRaises(AssertionError):
+            _ = Slice.encode(stx)
+        
