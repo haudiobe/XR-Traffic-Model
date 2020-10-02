@@ -1,4 +1,4 @@
-.ignore/
+__ignore__/
 .venv/
 *.csv
 *.zip
