@@ -309,7 +309,15 @@ class Encoder:
         for slice_idx in range(self._cfg.slices_per_frame):
             
             # @TODO: make referenceable configuration to False, eg. ACK mode
-            S:Slice = Slice(vtrace.pts, vtrace.poc, slice_idx, intra_mean, inter_mean, referenceable=self._default_referenceable_status, view_idx=self._view_idx) 
+            S:Slice = Slice(
+                vtrace.pts, 
+                vtrace.poc, 
+                slice_idx=slice_idx, 
+                intra_mean=intra_mean, 
+                inter_mean=inter_mean, 
+                referenceable=self._default_referenceable_status, 
+                view_idx=self._view_idx
+            ) 
             
             # slice type decision, based on error resilience mode
             if self._cfg.error_resilience_mode == ErrorResilienceMode.DISABLED:

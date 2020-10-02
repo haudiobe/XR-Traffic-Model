@@ -2,6 +2,9 @@ import os
 import csv
 from typing import List
 from enum import Enum, IntEnum
+import json
+import zlib
+import math
 
 import logging as logger
 
@@ -63,7 +66,7 @@ XRTM_CSV_MERGE_CTU_BITS = 'merge_ctu_bits'
 
 
 
-class SliceType(Enum):
+class SliceType(IntEnum):
     IDR = 1
     P = 3
 
@@ -206,27 +209,41 @@ class CTU:
         return self._mode
 
 class Slice(Referenceable):
-    
-    def __init__(self, pts:int, poc:int, slice_idx:int, intra_mean:int, inter_mean:int, referenceable:bool = True, view_idx:int = 0):
+
+    keys = ('pts', 'poc', 'slice_idx', 'total_time', 'slice_type', 'refs', 'view_idx')
+
+    def __init__(self, pts:int, poc:int, slice_type:SliceType = None, slice_idx:int=0, intra_mean:float=0, inter_mean:float=0, referenceable:bool = True, view_idx:int = 0, **noop):
         self.pts = pts
         self.poc = poc
+        self.slice_type = slice_type
         self.slice_idx = slice_idx
+        self.intra_mean = intra_mean
+        self.inter_mean = inter_mean
         self.qp_ref = -1
         self.bits_new = -1
         self.qp_new = -1
-        self.intra_mean = intra_mean
-        self.inter_mean = inter_mean
         self.y_psnr = -1
         self.u_psnr = -1
         self.v_psnr = -1
         self.yuv_psnr = -1
-        self.total_time = -1
+        self.total_time = 0 # encoding time
         self.stats = None
-        self.slice_type = None
         self.refs = []
         self.view_idx = view_idx
         self._referenceable = referenceable
-    
+
+    @staticmethod
+    def encode(s) -> bytes:
+        b = zlib.compress(json.dumps([s.__dict__[k] for k in Slice.keys]).encode())
+        nbytes = math.ceil(s.bits/8)
+        assert len(b) < nbytes
+        return b + bytes([0] * (nbytes - len(b)))
+
+    @staticmethod
+    def decode(data:bytes):
+        values = json.loads(zlib.decompress(data))
+        return Slice(**{k: v for (k, v) in zip(Slice.keys, values)})
+
     @property
     def bits(self):
         if self.bits_new < 0:

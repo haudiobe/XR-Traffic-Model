@@ -38,7 +38,6 @@ from xrtm.stereo import (
 
 logger = logging.getLogger(__name__)
 
-
 def stereo_encoder(cfg):
     feedback_provider = None
     if cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:

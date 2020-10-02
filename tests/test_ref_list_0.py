@@ -5,8 +5,7 @@ from xrtm.encoder import RefPicList, Encoder, EncoderConfig, ErrorResilienceMode
 from xrtm.models import Frame, SliceType, Slice
 
 def _slice(i, referenceable, slice_type:SliceType):
-    s = Slice(i, i, 0, 0, 0, referenceable=referenceable)
-    s.slice_type = slice_type
+    s = Slice(i, i, slice_type=slice_type, slice_idx=0, referenceable=referenceable)
     f = Frame(poc=i)
     f.slices.append(s)
     return f
