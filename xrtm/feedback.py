@@ -110,63 +110,6 @@ class FeedbackProvider(ABC):
     def apply_feedback(self, rpl:ReferenceableList) -> ReferenceableList:
         raise NotImplementedError()
 
-
-class TxFeedbackHandler(FeedbackProvider):
-
-    def __init__(self, max_diff:int = 16):
-        if max_diff <= 0:
-            raise ValueError(f'expected max_diff > 0')
-        self._fb_buffer:List[Feedback] = []
-        self._intra_refresh:Feedback = None
-        self._rc_max_bits:Feedback = None
-        self._max_diff = max_diff
-
-    def handle_feedback(self, fb:Feedback):
-        if (self._fb_buffer != None) and (fb.frame_idx < self._fb_buffer[len(self._fb_buffer)-1]):
-            return
-
-        if fb.rc_max_bits != -1:
-            self._rc_max_bits = fb
-
-        if fb.type == FeedbackType.INTRA_REFRESH:
-            if self._intra_refresh == None:
-                self._intra_refresh = fb
-            elif self._intra_refresh.slice_idx < fb.frame_idx:
-                self._intra_refresh = fb
-
-        elif fb.type == FeedbackType.SLICE_NACK or fb.type == FeedbackType.SLICE_ACK:
-            self._fb_buffer.append(fb)
-            if len(self._fb_buffer) > 1:
-                self._fb_buffer.sort()
-                head = self._fb_buffer[len(self._fb_buffer)-1].slice_idx
-                self._fb_buffer = [item for item in self._fb_buffer if item.slice_idx > (head - self._max_diff)]
-
-    def intra_refresh_status(self) -> bool:
-        return self._intra_refresh != None
-
-    def clear_intra_refresh_status(self):
-        self._intra_refresh = None
-
-    @property
-    def rc_max_bits(self) -> int:
-        if self._rc_max_bits == None:
-            return -1
-        return self._rc_max_bits.rc_max_bits
-        
-    def apply_feedback(self, rpl:ReferenceableList) -> ReferenceableList:
-        if len(self._fb_buffer) == 0:
-            return 
-
-        for fb in self._fb_buffer:
-            if fb.type == FeedbackType.SLICE_NACK:
-                rpl.set_referenceable_status(fb.frame_idx, fb.slice_idx, False)
-            elif fb.type == FeedbackType.SLICE_ACK:
-                rpl.set_referenceable_status(fb.frame_idx, fb.slice_idx, True)
-
-        self._fb_buffer = []
-        return rpl
-
-
 class RandomFeedbackGenerator(FeedbackProvider):
     
     def __init__(self, full_intra_ratio:float, referenceable_ratio:float, referenceable_default:bool):
@@ -194,4 +137,9 @@ class RandomFeedbackGenerator(FeedbackProvider):
                     s.referenceable = not self.referenceable_default
         return rpl
 
+
+class RandomStereoFeedback:
+    def __init__(self, full_intra_ratio:float, referenceable_ratio:float, referenceable_default:bool):
+        self.enc0 = RandomFeedbackGenerator(full_intra_ratio, referenceable_ratio, referenceable_default)
+        self.enc1 = RandomFeedbackGenerator(full_intra_ratio, referenceable_ratio, referenceable_default)
 
