@@ -172,14 +172,15 @@ class XRTM(Enum):
     CN_JITTER_DELAY = CSV("cn_jitter_delay", int, None)
 
     # STraceTx
+    SLICE_IDX = CSV("slice_idx", int)
     QP_NEW = CSV("qp_new", float)
     INTRA_MEAN = CSV("intra_mean", float)
     INTER_MEAN = CSV("inter_mean", float)
     BITS_REF = CSV("bits_ref", int)
     BITS_NEW = CSV("bits_new", int)
     PRIORITY = CSV("priority", int, None, -1)
-    SLICE_AVAILABILITY = CSV("slice_availability", int, None, -1)
-    SLICE_IDX = CSV("slice_idx", int)
+    TIME_STAMP_IN_MICRO_S = CSV("time_stamp_in_micro_s", int, None, -1)
+    RENDER_TIMING = CSV("render_timing", int)
 
     # @TODO: store actual CTU map
     REFS = CSV("refs", parse_list(int), serialize_list)
@@ -378,7 +379,8 @@ class STraceTx(CsvRecord):
         XRTM.PRIORITY,
         XRTM.INTRA_MEAN,
         XRTM.INTER_MEAN,
-        XRTM.SLICE_AVAILABILITY,
+        XRTM.TIME_STAMP_IN_MICRO_S,
+        XRTM.RENDER_TIMING,
         *SliceStats.attributes
     ]
 
@@ -474,7 +476,7 @@ class PTraceTx(CsvRecord):
 
     @property
     def pckt_availability(self):
-        return 0 if self.lost else self._slice.slice_availability + self.cn_jitter_delay
+        return 0 if self.lost else self._slice.time_stamp_in_micro_s + self.cn_jitter_delay
     
     @property
     def priority(self):

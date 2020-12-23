@@ -40,7 +40,7 @@ from .feedback import (
     FeedbackProvider,
     FeedbackType,
     ReferenceableList,
-    StereoFeedbackHandler
+    RandomStereoFeedback
 )
 
 
@@ -324,7 +324,6 @@ class BaseEncoder(AbstracEncoder):
         
         for slice_idx in range(self._cfg.slices_per_frame):
             
-            # @TODO: make referenceable configuration to False, eg. ACK mode
             S:Slice = Slice(
                 vtrace.pts, 
                 vtrace.poc, 
@@ -436,7 +435,7 @@ class MonoEncoder:
 
 class StereoEncoder:
 
-    def __init__(self, cfg:EncoderConfig, feedback:StereoFeedbackHandler=None):
+    def __init__(self, cfg:EncoderConfig, feedback:RandomStereoFeedback=None):
         self.frame_idx = 0
         self.cfg = cfg # TODO: could be one per eye, has not been needed so far
         
