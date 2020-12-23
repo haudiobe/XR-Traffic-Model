@@ -9,8 +9,8 @@ from xrtm.models import STraceTx
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Model encoder configuration')
-    parser.add_argument('-i', '--s_trace', type=str, help='s-trace csv input', required=True)
-    parser.add_argument('-o', '--p_trace', type=str, help='p-trace csv output', required=True)
+    parser.add_argument('-s', '--s_trace', type=str, help='s-trace csv input', required=True)
+    parser.add_argument('-v', '--p_trace', type=str, help='p-trace csv output', required=True)
     args = parser.parse_args()
     
     strace_in = Path(args.s_trace)
