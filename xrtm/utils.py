@@ -2,35 +2,40 @@ from typing import List, Iterator
 
 from matplotlib import pyplot as plt
 from .models import (
-    VTrace, 
-    STrace
+    VTraceTx, 
+    STraceTx,
+    XRTM
 )
 import csv
 
-def read_csv_vtraces(csv_filename:str) -> Iterator[VTrace]:
+def read_csv_vtraces(csv_filename:str) -> Iterator[VTraceTx]:
     with open(csv_filename, newline='') as csvfile:
         vtrace_reader = csv.DictReader(csvfile)
         for row in vtrace_reader:
-            yield VTrace(row)
+            yield VTraceTx.from_csv_row(row)
 
-def plot(vtraces:List[VTrace], straces:List[STrace], nslices=1):
+def plot(vtraces:List[VTraceTx], straces:List[STraceTx], nslices=1):
 
     NPLOTS = 5
+    keys = [
+        XRTM.BITS_NEW,
+        XRTM.INTRA_CTU_BITS,
+        XRTM.INTER_CTU_BITS,
+        XRTM.SKIP_CTU_BITS,
+        XRTM.MERGE_CTU_BITS,
+        XRTM.INTRA_CTU_COUNT,
+        XRTM.INTER_CTU_COUNT,
+        XRTM.SKIP_CTU_COUNT,
+        XRTM.MERGE_CTU_COUNT,
+    ]
 
     if nslices > 1:
         NPLOTS = 4
         slices_by_poc = {}
         for s in straces:
             if s['poc'] in slices_by_poc:
-                slices_by_poc[s['poc']]['bits'] += s['bits']
-                slices_by_poc[s['poc']]['intra_ctu_bits'] += s['intra_ctu_bits']
-                slices_by_poc[s['poc']]['inter_ctu_bits'] += s['inter_ctu_bits']
-                slices_by_poc[s['poc']]['skip_ctu_bits'] += s['skip_ctu_bits']
-                slices_by_poc[s['poc']]['merge_ctu_bits'] += s['merge_ctu_bits']
-                slices_by_poc[s['poc']]['intra_ctu_count'] += s['intra_ctu_count']
-                slices_by_poc[s['poc']]['inter_ctu_count'] += s['inter_ctu_count']
-                slices_by_poc[s['poc']]['skip_ctu_count'] += s['skip_ctu_count']
-                slices_by_poc[s['poc']]['merge_ctu_count'] += s['merge_ctu_count']
+                for k in keys:
+                    slices_by_poc[s['poc']][k] += s[k]
             else:
                 slices_by_poc[s['poc']] = s
         agg = []
@@ -51,7 +56,7 @@ def plot(vtraces:List[VTrace], straces:List[STrace], nslices=1):
     vtPbits = filter(vtraces, 'inter_total_bits')
 
     stx = filter(straces, 'poc')
-    sty = filter(straces, 'bits')
+    sty = filter(straces, XRTM.BITS_NEW.name)
 
     axs[0].plot( vtx, vtIbits, label='intra total ref', color='green')
     axs[0].plot( vtx, vtPbits, label='inter total ref', color='yellowgreen')
@@ -61,10 +66,10 @@ def plot(vtraces:List[VTrace], straces:List[STrace], nslices=1):
     axs[0].set_xlabel('poc')
     axs[0].legend()
 
-    intra_bits = filter(straces, 'intra_ctu_bits')
-    inter_bits = filter(straces, 'inter_ctu_bits')
-    merge_bits = filter(straces, 'merge_ctu_bits')
-    skip_bits = filter(straces, 'skip_ctu_bits')
+    intra_bits = filter(straces, XRTM.INTRA_CTU_BITS.name)
+    inter_bits = filter(straces, XRTM.INTER_CTU_BITS.name)
+    merge_bits = filter(straces, XRTM.MERGE_CTU_BITS.name)
+    skip_bits = filter(straces, XRTM.SKIP_CTU_BITS.name)
 
     axs[1].plot( stx, intra_bits, label='intra', color='yellowgreen')
     axs[1].plot( stx, inter_bits, label='inter', color='darkorange')
@@ -74,10 +79,10 @@ def plot(vtraces:List[VTrace], straces:List[STrace], nslices=1):
     axs[1].set_xlabel('poc')
     axs[1].legend()
 
-    intra_count = filter(straces, 'intra_ctu_count')
-    inter_count = filter(straces, 'inter_ctu_count')
-    merge_count = filter(straces, 'merge_ctu_count')
-    skip_count = filter(straces, 'skip_ctu_count')
+    intra_count = filter(straces, XRTM.INTRA_CTU_COUNT.name)
+    inter_count = filter(straces, XRTM.INTER_CTU_COUNT.name)
+    merge_count = filter(straces, XRTM.MERGE_CTU_COUNT.name)
+    skip_count = filter(straces, XRTM.SKIP_CTU_COUNT.name)
 
     axs[2].plot( stx, intra_count, label='intra', color='yellowgreen')
     axs[2].plot( stx, inter_count, label='inter', color='darkorange')
@@ -87,8 +92,8 @@ def plot(vtraces:List[VTrace], straces:List[STrace], nslices=1):
     axs[2].set_xlabel('poc')
     axs[2].legend()
 
-    intra_mean = filter(straces, 'intra_mean')
-    inter_mean = filter(straces, 'inter_mean')
+    intra_mean = filter(straces, XRTM.INTRA_MEAN.name)
+    inter_mean = filter(straces, XRTM.INTER_MEAN.name)
     axs[3].plot( stx, intra_mean, label='intra medium value', color='green')
     axs[3].plot( stx, inter_mean, label='inter medium value', color='yellowgreen')
     axs[3].set_ylabel('bits')
@@ -96,8 +101,8 @@ def plot(vtraces:List[VTrace], straces:List[STrace], nslices=1):
     axs[3].legend()
     
     if nslices == 1:
-        qp_new = filter(straces, 'qp_new')
-        qp_ref = filter(straces, 'qp_ref')
+        qp_new = filter(straces, XRTM.QP_NEW.name)
+        qp_ref = filter(straces, XRTM.QP_REF.name)
         axs[4].plot( stx, qp_new, label='qp_new', color='grey')
         axs[4].plot( stx, qp_ref, label='qp_ref', color='teal')
         axs[4].set_ylabel('QP')
