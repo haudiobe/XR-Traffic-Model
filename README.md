@@ -1,7 +1,7 @@
 # XR-Traffic-Model
 
-## installation
 
+## installation
 
 **get the code**
 ```

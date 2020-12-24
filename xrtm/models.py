@@ -94,20 +94,23 @@ class CsvRecord:
 #################################################################################################################################
 # model attributes
 
-class SliceType(IntEnum):
-    IDR = 1
-    P = 3
+class CsvEnum(Enum):
 
     @staticmethod
-    def parse(t:str) -> str:
-        for T in [ SliceType.IDR, SliceType.P ]:
+    def parse(t:str) -> Enum:
+        for T in self.__members__:
             if t == str(T.value):
                 return T
         raise ValueError(f'parser error - invalid data: "{t}"')
 
     @staticmethod
-    def serialize(t:'SliceType') -> str:
+    def serialize(t:Enum) -> str:
         return str(t.value)
+
+
+class SliceType(CsvEnum):
+    IDR = 1
+    P = 3
 
 
 class XRTM(Enum):
@@ -347,6 +350,17 @@ class VTraceTx(CsvRecord):
             return self.inter_total_time
         raise ValueError('invalid argument: slice_type')
     
+    def get_qp_ref(self, slice_type:SliceType):
+        if slice_type == SliceType.IDR:
+            return self.intra_qp_ref
+        elif slice_type == SliceType.P:
+            return self.inter_qp_ref
+        raise ValueError('invalid argument: slice_type')
+    
+
+    def get_cu_distribution(self):
+        return self.ctu_intra_pct, self.ctu_inter_pct, self.ctu_skip_pct, self.ctu_merge_pct
+
     @property
     def is_full_intra(self):
         return self.ctu_intra_pct == 1.
@@ -361,84 +375,45 @@ class VTraceRx(VTraceTx):
 class STraceTx(CsvRecord):
 
     attributes = [
-        XRTM.PTS,
-        XRTM.POC,
-        XRTM.VIEW_IDX,
         # XRTM.USER_IDX,
-        XRTM.SLICE_IDX,
-        XRTM.SLICE_TYPE,
-        XRTM.BITS_REF,
-        XRTM.BITS_NEW,
-        XRTM.QP_REF,
-        XRTM.QP_NEW,
-        XRTM.REFS,
-        XRTM.PSNR_Y,
-        XRTM.PSNR_U,
-        XRTM.PSNR_V,
-        XRTM.PSNR_YUV,
-        XRTM.PRIORITY,
-        XRTM.INTRA_MEAN,
-        XRTM.INTER_MEAN,
         XRTM.TIME_STAMP_IN_MICRO_S,
+        XRTM.INDEX,
+        XRTM.SIZE,
+        XRTM.EYE_BUFFER,
         XRTM.RENDER_TIMING,
-        *SliceStats.attributes
+        XRTM.TYPE,
+        XRTM.PRIORITY,
+        XRTM.START_ADDRESS_CU = CSV('start_address_cu', int, None),
+        XRTM.NUMBER_CUS = CSV('number_cus', int, None),
+        XRTM.FRAME_FILE = CSV('frame_file'),
+        # XRTM.BITS_REF,
+        # XRTM.BITS_NEW,
+        # XRTM.QP_REF,
+        # XRTM.QP_NEW,
+        # XRTM.REFS,
+        # XRTM.PSNR_Y,
+        # XRTM.PSNR_U,
+        # XRTM.PSNR_V,
+        # XRTM.PSNR_YUV,
+        # XRTM.INTRA_MEAN,
+        # XRTM.INTER_MEAN,
+        # *SliceStats.attributes
     ]
 
-    def __init__(self, data={}):
-        ctu_map = {}
-        for h in self.attributes:
-            if h in SliceStats.attributes:
-                ctu_map[h.name] = data.get(h.name, h.default)
-            else:
-                setattr(self, h.name, data.get(h.name, h.default))
-        self.ctu_map = SliceStats(ctu_map)
-
-    @property
-    def intra_ctu_count(self):
-        return self.ctu_map.intra_ctu_count
-
-    @property
-    def intra_ctu_bits(self):
-        return self.ctu_map.intra_ctu_bits
-    
-    @property
-    def inter_ctu_count(self):
-        return self.ctu_map.inter_ctu_count
-    
-    @property
-    def inter_ctu_bits(self):
-        return self.ctu_map.inter_ctu_bits
-    
-    @property
-    def skip_ctu_count(self):
-        return self.ctu_map.skip_ctu_count
-    
-    @property
-    def skip_ctu_bits(self):
-        return self.ctu_map.skip_ctu_bits
-    
-    @property
-    def merge_ctu_count(self):
-        return self.ctu_map.merge_ctu_count
-    
-    @property
-    def merge_ctu_bits(self):
-        return self.ctu_map.merge_ctu_bits
-
-    @classmethod
-    def from_row(cls, row) -> 'STraceTx':
-        for k, v in row:
-            print(k, v)
-        
     @classmethod
     def from_slice(cls, s:'Slice') -> 'STraceTx':
-        st = cls({ 
-                'bits_ref': s.bits_ref, 
-                **s.__dict__, 
-                **s.stats.__dict__ 
-            })
+        st = cls()
+        st.time_stamp_in_micro_s = s.time_stamp_in_micro_s
+        st.index = s.slice_idx
+        st.size = s.bits_new
+        st.eye_buffer = s.view_idx
+        st.render_timing = s.render_timing
+        st.type = s.slice_type
+        st.priority = s.priority
+        st.start_address_cu = s.cu_address
+        st.number_cus = s.cu_count
+        st.frame_file = s.frame_file
         return st
-
 
 class STraceRx(STraceTx):
     """
@@ -490,52 +465,87 @@ class PTraceRx(PTraceTx):
 
 
 #################################################################################################################################
-# TODO: Move these to encoder module
-#################################################################################################################################
+
+class RateControl:
+
+    def __init__(self, rc_max_bits=-1, crf=-1):
+        self.max_bits = -1
+        self.crf = crf
+        self._crf = -1
+        self._i_qp_ref = -1
+        self._p_qp_ref = -1
+
+    def update(self, vtrace:VTraceTx):
+        #TODO: maintain bitrate over configurable window
+        self._i_qp_ref = vtrace.intra_qp_ref
+        self._p_qp_ref = vtrace.inter_qp_ref
+        self._crf_ref = vtrate.crf_ref
+
+    def adjust(self, mode:SliceType, size:int):
+        qp = self._i_qp_ref if mode == SliceType.IDR else self._p_qp_ref
+
+        if self.max_bits > 0:
+            crf_new = self.crf_new if self.crf_new > 0 else self._crf_ref
+            bits_new = size
+            while bits_new > self.max_bits:
+                crf_new += 1
+                bits_new, qp_new = model_crf_adjustment(size, crf_new, self._crf_ref, qp)
+                if crf_new == 51: 
+                    break
+            return bits_new, qp_new 
+
+        elif self.crf_new > 0:
+            return model_crf_adjustment(size, self.crf_new, self._crf_ref, qp)
+            
+        else:
+            return size, qp
+
+def model_crf_adjustment(bits, CRF, CRFref, qp):
+    y = CRFref - CRF
+    final_bits = bits * pow(2, y/6)
+    QPnew = qp - y
+    return final_bits, QPnew
+
+def model_pnsr_adjustment(qp_new, qp_ref, psnr):
+    qp_delta = qp_new - qp_ref
+    return psnr + qp_delta
+
+
 
 class Slice(Referenceable):
 
-    def __init__(self, 
-        pts:int, 
-        poc:int, 
-        slice_type:SliceType = None, 
-        slice_idx:int=0, 
-        intra_mean:float=0, 
-        inter_mean:float=0, 
-        referenceable:bool = True, 
-        view_idx:int = 0, 
-        anchor_time:int = 0,
-        render_jitter:int = 0,
-        slice_delay:int = 0,
-        eye_buffer_delay:int = 0,
-        **noop
-    ):
-        self.pts = pts
+    def __init__(self, frame_idx, slice_idx, cu_map, cu_address, cu_count, view_idx=0):
         self.poc = poc
-        self.slice_type = slice_type
         self.slice_idx = slice_idx
-        self.intra_mean = intra_mean
-        self.inter_mean = inter_mean
+        self.cu_map = cu_map
+        self.cu_address = cu_idx
+        self.cu_count = cu_count
+
+        self.pts = -1
+        self.slice_type = None
+        self._referenceable = True
+        self.refs = []
+
+        self.priority = -1
+        self.intra_mean = None
+        self.inter_mean = None
         self.qp_ref = -1
-        self.bits_new = -1
         self.qp_new = -1
+        self.bits_new = -1
         self.y_psnr = -1
         self.u_psnr = -1
         self.v_psnr = -1
         self.yuv_psnr = -1
-        self.stats = None
-        self.refs = []
-        self.view_idx = view_idx
-        self._referenceable = referenceable
-        
-        self.render_timing = 0 
-        self.time_stamp_in_micro_s = 0
-        
+
+        self.view_idx = 0
+        self.time_stamp_in_micro_s = -1
+        self.render_timing = -1
+
+
     @property
-    def bits(self):
-        assert self.bits_new > 0, 'new size not set'
-        return self.bits_new
-    
+    def frame_file(self):
+        return f'{self.view_idx}_{self.poc}.csv'
+
     @property
     def bits_ref(self) -> int:
         if self.stats == None:
@@ -543,10 +553,6 @@ class Slice(Referenceable):
             return -1
         else:
            return self.stats.total_size
-
-    @property
-    def priority(self):
-        return -1
 
     def get_referenceable_status(self):
         return self._referenceable
@@ -556,25 +562,37 @@ class Slice(Referenceable):
     
     referenceable = property(get_referenceable_status, set_referenceable_status)
 
+
 class Frame:
 
-    poc:int
-    slices:List[Slice]
-    is_idr_frame:bool
-
-    def __init__(self, poc:int, idr:bool = False, view_idx:int = 0):
-        self.poc = poc
+    def __init__(self, width:int, height:int, slices_per_frame:int, intra_mean:float, inter_mean:float, cu_size=64,):
+        self._intra_mean = math.ceil(intra_mean)
+        self._inter_mean = math.ceil(inter_mean)
+        self.slices_per_frame = slices_per_frame
+        self.cu_count = int(( width * height ) / ( cu_size * cu_size ))
+        self.cu_per_slice = int(( width / cu_size ) * height / ( slices_per_frame * cu_size ))
+        self.cu_map = CtuMap(self.cu_count)
         self.slices = []
-        self.is_idr_frame = idr
-        self.view_idx = view_idx
+        for slice_idx in range(self.slices_per_frame):
+            cu_idx = self.cu_count * slice_idx
+            self.slices.append(
+                Slice(frame_idx, slice_idx, self.cu_map, cu_idx, self.cu_per_slice)
+            )
 
-def validates_ctu_distribution(vt:VTraceTx, raise_exception=True) -> bool:
-    total = vt.ctu_intra_pct + vt.ctu_inter_pct + vt.ctu_skip_pct + vt.ctu_merge_pct
-    valid = round(total * 100) == 100
-    if not valid:
-        e_msg = f'Invalid CTU distribution on frame {vt.poc} - sum of all CTUs is {total}%'
-        if raise_exception:
-            raise VTraceTxException(e_msg)
-        logger.critical(e_msg)
-    return valid
+    def draw(self, *cu_distribution):
+        self.cu_map.draw(self.cu_count, *cu_distribution, self._intra_mean, self._inter_mean)
+    
+    def encode_slice(self, s:Slice, rc:RateControl, refs:List[int]):
+        bit_size = 0
+        for cu in self.cu_map.get_slice:
+            if s.slice_type == SliceType.IDR:
+                cu.size = self._intra_mean
+            elif s.slice_type == SliceType.SKIP:
+                cu.size = 8
+            else:
+                cu.refs = refs[0]
+                cu.size = self._inter_mean
+            bit_size += cu.size
+        return rc.adjust(s.slice_type, bit_size)
+
 
