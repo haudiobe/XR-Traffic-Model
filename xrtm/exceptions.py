@@ -1,6 +1,6 @@
 
 
-class VTraceException(Exception):
+class VTraceTxException(Exception):
     pass
 
 class EncoderConfigException(Exception):

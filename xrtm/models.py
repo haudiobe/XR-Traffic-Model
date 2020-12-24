@@ -1,195 +1,201 @@
 import os
 import csv
-from typing import List
+from typing import Any, Iterable, List, Dict, Callable
 from enum import Enum, IntEnum
 import json
 import zlib
 import math
+from pathlib import Path
+from collections import OrderedDict
 
 import logging as logger
 
-from .exceptions import VTraceException
+from .exceptions import VTraceTxException
 from .feedback import Referenceable
 
-XRTM_CSV_PTS = 'pts'
-XRTM_CSV_POC = 'poc'
-XRTM_CSV_CRF = 'crf_ref'
-XRTM_CSV_SLICE_TYPE = 'slice_type'
 
-XRTM_CSV_INTRA_QP = 'intra_qp_ref'
-XRTM_CSV_INTRA_BITS = 'intra_total_bits'
+#################################################################################################################################
+# CSV PARSING
 
-XRTM_CSV_INTER_QP = 'inter_qp_ref'
-XRTM_CSV_INTER_BITS = 'inter_total_bits'
+def parse_list(cls=str, separator=",") -> Callable:
+    def parse(s):
+        if s == '':
+            return []
+        else:
+            return [cls(item) for item in s.split(separator)]
+    return parse
 
-XRTM_CSV_CU_INTRA = 'ctu_intra_pct'
-XRTM_CSV_CU_INTER = 'ctu_inter_pct'
-XRTM_CSV_CU_SKIP = 'ctu_skip_pct'
-XRTM_CSV_CU_MERGE = 'ctu_merge_pct'
+def serialize_list(l:List[Any], separator=",") -> str:
+    return str(separator).join([str(i) for i in l])
 
-XRTM_CSV_INTRA_PSNR_Y = 'intra_y_psnr'
-XRTM_CSV_INTRA_PSNR_U = 'intra_u_psnr'
-XRTM_CSV_INTRA_PSNR_V = 'intra_v_psnr'
-XRTM_CSV_INTRA_PSNR_YUV = 'intra_yuv_psnr'
+class CSV:
 
-XRTM_CSV_INTER_PSNR_Y = 'inter_y_psnr'
-XRTM_CSV_INTER_PSNR_U = 'inter_u_psnr'
-XRTM_CSV_INTER_PSNR_V = 'inter_v_psnr'
-XRTM_CSV_INTER_PSNR_YUV = 'inter_yuv_psnr'
+    def __init__(self, name:str, parse:Callable=None, serialize:Callable=None, default:Any=None):
+        self.name = name
+        self.default = default
+        self._parse = parse
+        self._serialize = serialize
+    
+    def parse(self, data:str) -> Any:
+        if self._parse != None:
+            return self._parse(data)
+        if not data:
+            data = self.default
+        return data
 
-XRTM_CSV_INTRA_TOTAL_TIME = 'intra_total_time'
-XRTM_CSV_INTER_TOTAL_TIME = 'inter_total_time'
-XRTM_CSV_TOTAL_TIME = 'total_time'
-
-XRTM_CSV_PSNR_Y = 'y_psnr'
-XRTM_CSV_PSNR_U = 'u_psnr'
-XRTM_CSV_PSNR_V = 'v_psnr'
-XRTM_CSV_PSNR_YUV = 'yuv_psnr'
-
-XRTM_CSV_STRACE_BITS = 'bits'
-XRTM_CSV_STRACE_BITS_REF = 'bits_ref'
-XRTM_CSV_STRACE_QP_NEW = 'qp_new'
-XRTM_CSV_STRACE_QP_REF = 'qp_ref'
-XRTM_CSV_INTRA_MEAN = 'intra_mean'
-XRTM_CSV_INTER_MEAN = 'inter_mean'
-XRTM_CSV_REF0 = 'ref0'
-XRTM_CSV_VIEWIDX = 'view'
-
-XRTM_CSV_INTRA_CTU_COUNT = 'intra_ctu_count'
-XRTM_CSV_INTRA_CTU_BITS = 'intra_ctu_bits'
-XRTM_CSV_INTER_CTU_COUNT = 'inter_ctu_count'
-XRTM_CSV_INTER_CTU_BITS = 'inter_ctu_bits'
-XRTM_CSV_SKIP_CTU_COUNT = 'skip_ctu_count'
-XRTM_CSV_SKIP_CTU_BITS = 'skip_ctu_bits'
-XRTM_CSV_MERGE_CTU_COUNT = 'merge_ctu_count'
-XRTM_CSV_MERGE_CTU_BITS = 'merge_ctu_bits'
+    def serialize(self, data:Any) -> str:
+        if data == None:
+            data = self.default
+        if self._serialize != None:
+            return self._serialize(data)
+        return str(data)
 
 
+class CsvRecord:
+
+    attributes:List[CSV] = []
+
+    def __init__(self, data:dict):
+        for h in self.attributes:
+            setattr(self, h.name, data.get(h.name, h.default))
+
+    @classmethod
+    def from_csv_row(cls, row:dict):
+        data = {}
+        for h in cls.attributes:
+            data[h.name] = h.parse(row.get(h.name, None))
+        return cls(data)
+
+    @classmethod
+    def get_csv_fieldnames(cls) -> List[str]:
+        return [h.name for h in cls.attributes]
+
+    def get_csv_dict(self) -> dict:
+        r = {}
+        for h in self.attributes:
+            r[h.name] = h.serialize(getattr(self, h.name, h.default))
+        return r
+
+    @classmethod
+    def iter_csv_file(cls, fp:Path):
+        with open(fp, newline='') as f:
+            vtrace_reader = csv.DictReader(f)
+            for row in vtrace_reader:
+                yield cls.from_csv_row(row)
+
+    @classmethod
+    def get_csv_writer(cls, f, writeheaders=True):
+        w =  csv.DictWriter(f, fieldnames=cls.get_csv_fieldnames())
+        if writeheaders:
+            w.writeheader()
+        return w
+
+
+#################################################################################################################################
+# model attributes
 
 class SliceType(IntEnum):
     IDR = 1
     P = 3
 
-class VTrace:
+    @staticmethod
+    def parse(t:str) -> str:
+        for T in [ SliceType.IDR, SliceType.P ]:
+            if t == str(T.value):
+                return T
+        raise ValueError(f'parser error - invalid data: "{t}"')
 
     @staticmethod
-    def csv_fields():
-        return [
-            XRTM_CSV_PTS,
-            XRTM_CSV_POC,
-            XRTM_CSV_CRF,
-            XRTM_CSV_INTRA_QP,
-            XRTM_CSV_INTRA_BITS,
-            XRTM_CSV_INTER_QP,
-            XRTM_CSV_INTER_BITS,
-            XRTM_CSV_CU_INTRA,
-            XRTM_CSV_CU_INTER,
-            XRTM_CSV_CU_SKIP,
-            XRTM_CSV_CU_MERGE,
-            XRTM_CSV_INTRA_PSNR_Y,
-            XRTM_CSV_INTRA_PSNR_U,
-            XRTM_CSV_INTRA_PSNR_V,
-            XRTM_CSV_INTRA_PSNR_YUV,
-            XRTM_CSV_INTER_PSNR_Y,
-            XRTM_CSV_INTER_PSNR_U,
-            XRTM_CSV_INTER_PSNR_V,
-            XRTM_CSV_INTER_PSNR_YUV,
-            XRTM_CSV_INTRA_TOTAL_TIME,
-            XRTM_CSV_INTER_TOTAL_TIME
-        ]
+    def serialize(t:'SliceType') -> str:
+        return str(t.value)
 
-    def __init__(self, data=None):
-        if data == None:
-            return
 
-        self.pts = int(data[XRTM_CSV_PTS])
-        self.poc = int(data[XRTM_CSV_POC])
-        self.crf_ref = float(data[XRTM_CSV_CRF])
-        self.intra_total_bits = int(data[XRTM_CSV_INTRA_BITS])
-        self.intra_qp_ref = float(data[XRTM_CSV_INTRA_QP])/100
-        self.inter_total_bits = int(data[XRTM_CSV_INTER_BITS])
-        self.inter_qp_ref = float(data[XRTM_CSV_INTER_QP])/100
-        self.ctu_intra_pct = float(data[XRTM_CSV_CU_INTRA])/100
-        self.ctu_inter_pct = float(data[XRTM_CSV_CU_INTER])/100
-        self.ctu_skip_pct = float(data[XRTM_CSV_CU_SKIP])/100
-        self.ctu_merge_pct = float(data[XRTM_CSV_CU_MERGE])/100
-
-        self.intra_y_psnr = int(data[XRTM_CSV_INTRA_PSNR_Y])
-        self.intra_u_psnr = int(data[XRTM_CSV_INTRA_PSNR_U])
-        self.intra_v_psnr = int(data[XRTM_CSV_INTRA_PSNR_V])
-        self.intra_yuv_psnr = int(data[XRTM_CSV_INTRA_PSNR_YUV])
-        
-        self.inter_y_psnr = int(data[XRTM_CSV_INTER_PSNR_Y])/1000
-        self.inter_u_psnr = int(data[XRTM_CSV_INTER_PSNR_U])/1000
-        self.inter_v_psnr = int(data[XRTM_CSV_INTER_PSNR_V])/1000
-        self.inter_yuv_psnr = int(data[XRTM_CSV_INTER_PSNR_YUV])/1000
-
-        self.intra_total_time = int(data[XRTM_CSV_INTER_TOTAL_TIME])
-        self.inter_total_time = int(data[XRTM_CSV_INTRA_TOTAL_TIME])
-
-    def get_psnr_ref(self, slice_type:SliceType) -> dict:
-        if slice_type == SliceType.IDR:
-            return {
-                XRTM_CSV_PSNR_Y: self.intra_y_psnr,
-                XRTM_CSV_PSNR_U: self.intra_u_psnr,
-                XRTM_CSV_PSNR_V: self.intra_v_psnr,
-                XRTM_CSV_PSNR_YUV: self.intra_yuv_psnr
-            }
-        elif slice_type == SliceType.P:
-            return {
-                XRTM_CSV_PSNR_Y: self.inter_y_psnr,
-                XRTM_CSV_PSNR_U: self.inter_u_psnr,
-                XRTM_CSV_PSNR_V: self.inter_v_psnr,
-                XRTM_CSV_PSNR_YUV: self.inter_yuv_psnr
-            }
-        raise ValueError('invalid argument: slice_type')
-
-    def get_encoding_time(self, slice_type:SliceType):
-        if slice_type == SliceType.IDR:
-            return self.intra_total_time
-        elif slice_type == SliceType.P:
-            return self.inter_total_time
-        raise ValueError('invalid argument: slice_type')
+class XRTM(Enum):
     
     @property
-    def is_full_intra(self):
-        return self.ctu_intra_pct == 1.
+    def name(self):
+        return self.value.name
 
-class SliceStats:
+    @property
+    def default(self):
+        return self.value.default
 
-    intra_ctu_count = 0
-    intra_ctu_bits = 0
-    inter_ctu_count = 0
-    inter_ctu_bits = 0
-    skip_ctu_count = 0
-    skip_ctu_bits = 0
-    merge_ctu_count = 0
-    merge_ctu_bits = 0
+    def parse(self, data) -> Any:
+        return self.value.parse(data)
 
-    def add_intra_ctu(self, bits):
-        self.intra_ctu_count += 1
-        self.intra_ctu_bits += bits
+    def serialize(self, data) -> str:
+        return self.value.serialize(data)
 
-    def add_inter_ctu(self, bits):
-        self.inter_ctu_count += 1
-        self.inter_ctu_bits += bits
-
-    def add_skip_ctu(self):
-        self.skip_ctu_count += 1
-        self.skip_ctu_bits += 8
-
-    def add_merge_ctu(self, bits):
-        self.merge_ctu_count += 1
-        self.merge_ctu_bits += bits
+    # Session cfg
+    USER_ID = CSV("user_id", int, None)
     
-    @property
-    def total_size(self):
-        return self.intra_ctu_bits + self.inter_ctu_bits + self.skip_ctu_bits + self.merge_ctu_bits
+    # VTraceTx
+    VIEW_IDX = CSV("view_idx", int, None, -1) # 0: LEFT, 1: RIGHT
+    PTS = CSV("pts", int)
+    POC = CSV("poc", int)
+    CRF_REF = CSV("crf_ref", float)
+    QP_REF = CSV("qp_ref", float)
+    SLICE_TYPE = CSV("slice_type", SliceType.parse, SliceType.serialize)
 
-    @property
-    def ctu_count(self):
-        return self.intra_ctu_count + self.inter_ctu_count + self.skip_ctu_count + self.merge_ctu_count
+    INTRA_QP_REF = CSV("intra_qp_ref", int )
+    INTRA_TOTAL_BITS = CSV("intra_total_bits", int)
+    INTRA_TOTAL_TIME = CSV("intra_total_time", int)
+    INTRA_PSNR_Y = CSV("intra_y_psnr", float)
+    INTRA_PSNR_U = CSV("intra_u_psnr", float)
+    INTRA_PSNR_V = CSV("intra_v_psnr", float)
+    INTRA_PSNR_YUV = CSV("intra_yuv_psnr", float)
 
+    INTER_QP_REF = CSV("inter_qp_ref", float)
+    INTER_TOTAL_BITS = CSV("inter_total_bits", int)
+    INTER_TOTAL_TIME = CSV("inter_total_time", int)
+    INTER_PSNR_Y = CSV("inter_y_psnr", float)
+    INTER_PSNR_U = CSV("inter_u_psnr", float)
+    INTER_PSNR_V = CSV("inter_v_psnr", float)
+    INTER_PSNR_YUV = CSV("inter_yuv_psnr", float)
+
+    PSNR_Y = CSV("y_psnr", float)
+    PSNR_U = CSV("u_psnr", float)
+    PSNR_V = CSV("v_psnr", float)
+    PSNR_YUV = CSV("yuv_psnr", float)
+
+    CU_INTRA = CSV("ctu_intra_pct", float)
+    CU_INTER = CSV("ctu_inter_pct", float)
+    CU_SKIP = CSV("ctu_skip_pct", float)
+    CU_MERGE = CSV("ctu_merge_pct", float)
+
+    # PTraceTx
+    PCKT_SEQNUM = CSV("pckt_seqnum", int, None)
+    PCKT_AVAILABILITY = CSV("pckt_availability", int, None)
+    PCKT_SIZE = CSV("pckt_size", int, None)
+    PCKT_FRAGNUM = CSV("pckt_fragnum", int, None)
+    PCKT_IS_LAST = CSV("pckt_is_last", bool, int)
+    CN_JITTER_DELAY = CSV("cn_jitter_delay", int, None)
+
+    # STraceTx
+    SLICE_IDX = CSV("slice_idx", int)
+    QP_NEW = CSV("qp_new", float)
+    INTRA_MEAN = CSV("intra_mean", float)
+    INTER_MEAN = CSV("inter_mean", float)
+    BITS_REF = CSV("bits_ref", int)
+    BITS_NEW = CSV("bits_new", int)
+    PRIORITY = CSV("priority", int, None, -1)
+    TIME_STAMP_IN_MICRO_S = CSV("time_stamp_in_micro_s", int, None, -1)
+    RENDER_TIMING = CSV("render_timing", int)
+
+    # @TODO: store actual CTU map
+    REFS = CSV("refs", parse_list(int), serialize_list)
+    INTRA_CTU_COUNT = CSV("intra_ctu_count", int, None, -1)
+    INTRA_CTU_BITS = CSV("intra_ctu_bits", int, None, -1)
+    INTER_CTU_COUNT = CSV("inter_ctu_count", int, None, -1)
+    INTER_CTU_BITS = CSV("inter_ctu_bits", int, None, -1)
+    SKIP_CTU_COUNT = CSV("skip_ctu_count", int, None, -1)
+    SKIP_CTU_BITS = CSV("skip_ctu_bits", int, None, -1)
+    MERGE_CTU_COUNT = CSV("merge_ctu_count", int, None, -1)
+    MERGE_CTU_BITS = CSV("merge_ctu_bits", int, None, -1)
+
+
+#################################################################################################################################
+# @TODO: CTU Map / currently, the CTU map is 
 
 class CTUEncodingMode(IntEnum):
     INTRA = 1
@@ -207,12 +213,303 @@ class CTU:
     def mode(self):
         return self._mode
 
+
+
+class SliceStats(CsvRecord):
+
+    attributes = [
+        XRTM.INTRA_CTU_COUNT,
+        XRTM.INTRA_CTU_BITS,
+        XRTM.INTER_CTU_COUNT,
+        XRTM.INTER_CTU_BITS,
+        XRTM.SKIP_CTU_COUNT,
+        XRTM.SKIP_CTU_BITS,
+        XRTM.MERGE_CTU_COUNT,
+        XRTM.MERGE_CTU_BITS
+    ]
+
+    def __init__(self, data={}):
+        for h in self.attributes:
+            setattr(self, h.name, data.get(h.name, 0))
+
+    def add_intra_ctu(self, bits):
+        self.intra_ctu_count += 1
+        self.intra_ctu_bits += math.ceil(bits)
+
+    def add_inter_ctu(self, bits):
+        self.inter_ctu_count += 1
+        self.inter_ctu_bits += math.ceil(bits)
+
+    def add_skip_ctu(self):
+        self.skip_ctu_count += 1
+        self.skip_ctu_bits += math.ceil(8)
+
+    def add_merge_ctu(self, bits):
+        self.merge_ctu_count += 1
+        self.merge_ctu_bits += math.ceil(bits)
+    
+    @property
+    def total_size(self) -> int:
+        """
+        total bit size
+        """
+        return int(self.intra_ctu_bits + self.inter_ctu_bits + self.skip_ctu_bits + self.merge_ctu_bits)
+
+    @property
+    def ctu_count(self) -> int:
+        return int(self.intra_ctu_count + self.inter_ctu_count + self.skip_ctu_count + self.merge_ctu_count)
+
+
+#################################################################################################################################
+# models
+
+class VTraceTx(CsvRecord):
+
+    attributes = [
+            # XRTM.VIEW_IDX
+            XRTM.PTS,
+            XRTM.POC,
+            XRTM.CRF_REF,
+
+            XRTM.INTRA_QP_REF,
+            XRTM.INTRA_TOTAL_BITS,
+            XRTM.INTRA_TOTAL_TIME,
+            XRTM.INTRA_PSNR_Y,
+            XRTM.INTRA_PSNR_U,
+            XRTM.INTRA_PSNR_V,
+            XRTM.INTRA_PSNR_YUV,
+
+            XRTM.INTER_QP_REF,
+            XRTM.INTER_TOTAL_BITS,
+            XRTM.INTER_TOTAL_TIME,
+            XRTM.INTER_PSNR_Y,
+            XRTM.INTER_PSNR_U,
+            XRTM.INTER_PSNR_V,
+            XRTM.INTER_PSNR_YUV,
+
+            XRTM.CU_INTRA,
+            XRTM.CU_INTER,
+            XRTM.CU_SKIP,
+            XRTM.CU_MERGE
+    ]
+
+    def __init__(self, data=None):
+
+        super().__init__(data)
+        
+        # TODO: clarify expected data range 
+        for k in [
+            XRTM.INTRA_QP_REF,
+            XRTM.INTER_QP_REF,
+            XRTM.CU_INTRA,
+            XRTM.CU_INTER,
+            XRTM.CU_SKIP,
+            XRTM.CU_MERGE
+        ]:
+            v = getattr(self, k.name) / 100
+            setattr(self, k.name, v)
+
+        # TODO: clarify expected data range 
+        for k in [
+            XRTM.INTRA_PSNR_Y,
+            XRTM.INTRA_PSNR_U,
+            XRTM.INTRA_PSNR_V,
+            XRTM.INTRA_PSNR_YUV,
+            XRTM.INTER_PSNR_Y,
+            XRTM.INTER_PSNR_U,
+            XRTM.INTER_PSNR_V,
+            XRTM.INTER_PSNR_YUV
+        ]:
+            v = getattr(self, k.name) / 1000
+            setattr(self, k.name, v)
+
+    def get_psnr_ref(self, slice_type:SliceType) -> dict:
+        if slice_type == SliceType.IDR:
+            return {
+                XRTM.PSNR_Y.name: self.intra_y_psnr,
+                XRTM.PSNR_U.name: self.intra_u_psnr,
+                XRTM.PSNR_V.name: self.intra_v_psnr,
+                XRTM.PSNR_YUV.name: self.intra_yuv_psnr
+            }
+        elif slice_type == SliceType.P:
+            return {
+                XRTM.PSNR_Y.name: self.inter_y_psnr,
+                XRTM.PSNR_U.name: self.inter_u_psnr,
+                XRTM.PSNR_V.name: self.inter_v_psnr,
+                XRTM.PSNR_YUV.name: self.inter_yuv_psnr
+            }
+        raise ValueError('invalid argument: slice_type')
+
+    def get_encoding_time(self, slice_type:SliceType):
+        if slice_type == SliceType.IDR:
+            return self.intra_total_time
+        elif slice_type == SliceType.P:
+            return self.inter_total_time
+        raise ValueError('invalid argument: slice_type')
+    
+    @property
+    def is_full_intra(self):
+        return self.ctu_intra_pct == 1.
+
+class VTraceRx(VTraceTx):
+    """
+    TODO: implement V'Trace
+    """
+    pass
+
+
+class STraceTx(CsvRecord):
+
+    attributes = [
+        XRTM.PTS,
+        XRTM.POC,
+        XRTM.VIEW_IDX,
+        # XRTM.USER_IDX,
+        XRTM.SLICE_IDX,
+        XRTM.SLICE_TYPE,
+        XRTM.BITS_REF,
+        XRTM.BITS_NEW,
+        XRTM.QP_REF,
+        XRTM.QP_NEW,
+        XRTM.REFS,
+        XRTM.PSNR_Y,
+        XRTM.PSNR_U,
+        XRTM.PSNR_V,
+        XRTM.PSNR_YUV,
+        XRTM.PRIORITY,
+        XRTM.INTRA_MEAN,
+        XRTM.INTER_MEAN,
+        XRTM.TIME_STAMP_IN_MICRO_S,
+        XRTM.RENDER_TIMING,
+        *SliceStats.attributes
+    ]
+
+    def __init__(self, data={}):
+        ctu_map = {}
+        for h in self.attributes:
+            if h in SliceStats.attributes:
+                ctu_map[h.name] = data.get(h.name, h.default)
+            else:
+                setattr(self, h.name, data.get(h.name, h.default))
+        self.ctu_map = SliceStats(ctu_map)
+
+    @property
+    def intra_ctu_count(self):
+        return self.ctu_map.intra_ctu_count
+
+    @property
+    def intra_ctu_bits(self):
+        return self.ctu_map.intra_ctu_bits
+    
+    @property
+    def inter_ctu_count(self):
+        return self.ctu_map.inter_ctu_count
+    
+    @property
+    def inter_ctu_bits(self):
+        return self.ctu_map.inter_ctu_bits
+    
+    @property
+    def skip_ctu_count(self):
+        return self.ctu_map.skip_ctu_count
+    
+    @property
+    def skip_ctu_bits(self):
+        return self.ctu_map.skip_ctu_bits
+    
+    @property
+    def merge_ctu_count(self):
+        return self.ctu_map.merge_ctu_count
+    
+    @property
+    def merge_ctu_bits(self):
+        return self.ctu_map.merge_ctu_bits
+
+    @classmethod
+    def from_row(cls, row) -> 'STraceTx':
+        for k, v in row:
+            print(k, v)
+        
+    @classmethod
+    def from_slice(cls, s:'Slice') -> 'STraceTx':
+        st = cls({ 
+                'bits_ref': s.bits_ref, 
+                **s.__dict__, 
+                **s.stats.__dict__ 
+            })
+        return st
+
+
+class STraceRx(STraceTx):
+    """
+    TODO: implement V'Trace
+    """
+    pass
+
+
+class PTraceTx(CsvRecord):
+    
+    attributes = [
+            XRTM.PRIORITY,
+            XRTM.USER_ID,
+            XRTM.PCKT_SEQNUM,
+            XRTM.CN_JITTER_DELAY,
+            XRTM.PCKT_AVAILABILITY,
+            XRTM.PCKT_SIZE,
+            XRTM.PCKT_FRAGNUM,
+            XRTM.PCKT_IS_LAST
+    ]
+
+    HEADER_SIZE = 40
+
+    def __init__(self, s:STraceTx, payload_size:int, seqnum:int, fragnum:int, is_last=False):
+
+        self._slice = s
+        self.pckt_size = payload_size 
+        self.pckt_seqnum = seqnum
+        self.pckt_fragnum = fragnum
+        self.pckt_is_last = is_last
+        self.cn_jitter_delay = 0
+        self.user_id = 0
+        self.lost = False
+
+
+    @property
+    def pckt_availability(self):
+        return 0 if self.lost else self._slice.time_stamp_in_micro_s + self.cn_jitter_delay
+    
+    @property
+    def priority(self):
+        return self._slice.priority
+
+class PTraceRx(PTraceTx):
+    """
+    TODO: implement P'Trace
+    """
+    pass
+
+
+#################################################################################################################################
+# TODO: Move these to encoder module
+#################################################################################################################################
+
 class Slice(Referenceable):
 
-    # keys to be encoded to / decoded from bytes
-    keys = ('pts', 'poc', 'slice_idx', 'total_time', 'slice_type', 'refs', 'view_idx')
-
-    def __init__(self, pts:int, poc:int, slice_type:SliceType = None, slice_idx:int=0, intra_mean:float=0, inter_mean:float=0, referenceable:bool = True, view_idx:int = 0, **noop):
+    def __init__(self, 
+        pts:int, 
+        poc:int, 
+        slice_type:SliceType = None, 
+        slice_idx:int=0, 
+        intra_mean:float=0, 
+        inter_mean:float=0, 
+        referenceable:bool = True, 
+        view_idx:int = 0, 
+        anchor_time:int = 0,
+        render_jitter:int = 0,
+        slice_delay:int = 0,
+        eye_buffer_delay:int = 0,
+        **noop
+    ):
         self.pts = pts
         self.poc = poc
         self.slice_type = slice_type
@@ -226,38 +523,30 @@ class Slice(Referenceable):
         self.u_psnr = -1
         self.v_psnr = -1
         self.yuv_psnr = -1
-        self.total_time = 0 # encoding time
         self.stats = None
         self.refs = []
         self.view_idx = view_idx
         self._referenceable = referenceable
-
-    @staticmethod
-    def encode(s) -> bytes:
-        b = zlib.compress(json.dumps([s.__dict__[k] for k in Slice.keys]).encode())
-        nbytes = math.ceil(s.bits/8)
-        assert len(b) < nbytes
-        return b + bytes([0] * (nbytes - len(b)))
-
-    @staticmethod
-    def decode(data:bytes):
-        values = json.loads(zlib.decompress(data))
-        return Slice(**{k: v for (k, v) in zip(Slice.keys, values)})
-
+        
+        self.render_timing = 0 
+        self.time_stamp_in_micro_s = 0
+        
     @property
     def bits(self):
-        if self.bits_new < 0:
-            return self.bits_ref
-        else:
-            return self.bits_new
+        assert self.bits_new > 0, 'new size not set'
+        return self.bits_new
     
     @property
-    def bits_ref(self):
+    def bits_ref(self) -> int:
         if self.stats == None:
             assert self.bits_new == -1
             return -1
         else:
            return self.stats.total_size
+
+    @property
+    def priority(self):
+        return -1
 
     def get_referenceable_status(self):
         return self._referenceable
@@ -266,73 +555,6 @@ class Slice(Referenceable):
         self._referenceable = status
     
     referenceable = property(get_referenceable_status, set_referenceable_status)
-
-
-class STrace:
-
-    @staticmethod
-    def csv_headers():
-        return [
-            XRTM_CSV_PTS,
-            XRTM_CSV_POC,
-            XRTM_CSV_SLICE_TYPE,
-            XRTM_CSV_STRACE_BITS,
-            XRTM_CSV_STRACE_BITS_REF,
-            XRTM_CSV_STRACE_QP_REF,
-            XRTM_CSV_STRACE_QP_NEW,
-            XRTM_CSV_INTRA_CTU_COUNT,
-            XRTM_CSV_INTRA_CTU_BITS,
-            XRTM_CSV_INTER_CTU_COUNT,
-            XRTM_CSV_INTER_CTU_BITS,
-            XRTM_CSV_SKIP_CTU_COUNT,
-            XRTM_CSV_SKIP_CTU_BITS,
-            XRTM_CSV_MERGE_CTU_COUNT,
-            XRTM_CSV_MERGE_CTU_BITS,
-            XRTM_CSV_INTRA_MEAN,
-            XRTM_CSV_INTER_MEAN,
-            XRTM_CSV_REF0,
-            XRTM_CSV_PSNR_Y,
-            XRTM_CSV_PSNR_U,
-            XRTM_CSV_PSNR_V,
-            XRTM_CSV_PSNR_YUV,
-            XRTM_CSV_TOTAL_TIME,
-            XRTM_CSV_VIEWIDX
-        ]
-    
-
-    @staticmethod
-    def to_csv_dict(s:Slice):
-        assert s.stats != None
-
-        ctu_stats = {
-            XRTM_CSV_INTRA_CTU_COUNT: s.stats.intra_ctu_count,
-            XRTM_CSV_INTRA_CTU_BITS: s.stats.intra_ctu_bits,
-            XRTM_CSV_INTER_CTU_COUNT: s.stats.inter_ctu_count,
-            XRTM_CSV_INTER_CTU_BITS: s.stats.inter_ctu_bits,
-            XRTM_CSV_SKIP_CTU_COUNT: s.stats.skip_ctu_count,
-            XRTM_CSV_SKIP_CTU_BITS: s.stats.skip_ctu_bits,
-            XRTM_CSV_MERGE_CTU_COUNT: s.stats.merge_ctu_count,
-            XRTM_CSV_MERGE_CTU_BITS: s.stats.merge_ctu_bits,
-        }
-        
-        return {
-            XRTM_CSV_PTS: s.pts,
-            XRTM_CSV_POC: s.poc,
-            XRTM_CSV_SLICE_TYPE: s.slice_type,
-            XRTM_CSV_STRACE_QP_NEW: s.qp_new,
-            XRTM_CSV_STRACE_QP_REF: s.qp_ref,
-            XRTM_CSV_STRACE_BITS: s.bits,
-            XRTM_CSV_STRACE_BITS_REF: s.bits,
-            XRTM_CSV_INTRA_MEAN: s.intra_mean,
-            XRTM_CSV_INTER_MEAN: s.inter_mean,
-            XRTM_CSV_REF0: s.refs,
-            XRTM_CSV_PSNR_Y: s.y_psnr,
-            XRTM_CSV_PSNR_U: s.u_psnr,
-            XRTM_CSV_PSNR_V: s.v_psnr,
-            XRTM_CSV_PSNR_YUV: s.yuv_psnr,
-            XRTM_CSV_VIEWIDX: s.view_idx,
-            **ctu_stats
-        }
 
 class Frame:
 
@@ -346,12 +568,13 @@ class Frame:
         self.is_idr_frame = idr
         self.view_idx = view_idx
 
-def validates_ctu_distribution(vt:VTrace, raise_exception=True) -> bool:
+def validates_ctu_distribution(vt:VTraceTx, raise_exception=True) -> bool:
     total = vt.ctu_intra_pct + vt.ctu_inter_pct + vt.ctu_skip_pct + vt.ctu_merge_pct
     valid = round(total * 100) == 100
     if not valid:
         e_msg = f'Invalid CTU distribution on frame {vt.poc} - sum of all CTUs is {total}%'
         if raise_exception:
-            raise VTraceException(e_msg)
+            raise VTraceTxException(e_msg)
         logger.critical(e_msg)
     return valid
+
