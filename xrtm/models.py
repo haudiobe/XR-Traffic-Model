@@ -7,12 +7,13 @@ import zlib
 import math
 from pathlib import Path
 from collections import OrderedDict
+import random
 
 import logging as logger
 
 from .exceptions import VTraceTxException
 from .feedback import Referenceable
-
+# from .cu_map import CtuMap
 
 #################################################################################################################################
 # CSV PARSING
@@ -132,13 +133,18 @@ class XRTM(Enum):
     # Session cfg
     USER_ID = CSV("user_id", int, None)
     
+    # Generic fielnames
+    SIZE = CSV("size", int, None)
+    INDEX = CSV("index", int, None)
+    EYE_BUFFER = CSV("eye_buffer", int, None)
+    
     # VTraceTx
     VIEW_IDX = CSV("view_idx", int, None, -1) # 0: LEFT, 1: RIGHT
     PTS = CSV("pts", int)
-    POC = CSV("poc", int)
+    ENCODE_ORDER = CSV("encode_order", int)
     CRF_REF = CSV("crf_ref", float)
     QP_REF = CSV("qp_ref", float)
-    SLICE_TYPE = CSV("slice_type", SliceType.parse, SliceType.serialize)
+    TYPE = CSV("type", SliceType.parse, SliceType.serialize)
 
     INTRA_QP_REF = CSV("intra_qp_ref", int )
     INTRA_TOTAL_BITS = CSV("intra_total_bits", int)
@@ -175,93 +181,84 @@ class XRTM(Enum):
     CN_JITTER_DELAY = CSV("cn_jitter_delay", int, None)
 
     # STraceTx
+    TIME_STAMP_IN_MICRO_S = CSV("time_stamp_in_micro_s", int, None, -1)
     SLICE_IDX = CSV("slice_idx", int)
-    QP_NEW = CSV("qp_new", float)
     INTRA_MEAN = CSV("intra_mean", float)
     INTER_MEAN = CSV("inter_mean", float)
-    BITS_REF = CSV("bits_ref", int)
-    BITS_NEW = CSV("bits_new", int)
     PRIORITY = CSV("priority", int, None, -1)
-    TIME_STAMP_IN_MICRO_S = CSV("time_stamp_in_micro_s", int, None, -1)
+
     RENDER_TIMING = CSV("render_timing", int)
+    START_ADDRESS_CU = CSV('start_address_cu', int, None)
 
-    # @TODO: store actual CTU map
     REFS = CSV("refs", parse_list(int), serialize_list)
-    INTRA_CTU_COUNT = CSV("intra_ctu_count", int, None, -1)
-    INTRA_CTU_BITS = CSV("intra_ctu_bits", int, None, -1)
-    INTER_CTU_COUNT = CSV("inter_ctu_count", int, None, -1)
-    INTER_CTU_BITS = CSV("inter_ctu_bits", int, None, -1)
-    SKIP_CTU_COUNT = CSV("skip_ctu_count", int, None, -1)
-    SKIP_CTU_BITS = CSV("skip_ctu_bits", int, None, -1)
-    MERGE_CTU_COUNT = CSV("merge_ctu_count", int, None, -1)
-    MERGE_CTU_BITS = CSV("merge_ctu_bits", int, None, -1)
+    NUMBER_CUS = CSV('number_cus', int, None)
+    FRAME_FILE = CSV('frame_file', None, None)
 
 
-#################################################################################################################################
-# @TODO: CTU Map / currently, the CTU map is 
+class CTU_mode(CsvEnum):
+    INTRA = 0
+    INTER = 1
+    MERGE = 2
+    SKIP = 3
 
-class CTUEncodingMode(IntEnum):
-    INTRA = 1
-    INTER = 2
-    MERGE = 3
-    SKIP = 4
+class CTU_status(CsvEnum):
+    OK              = 0
+    DAMAGED         = 1
+    UNAVAILABLE     = 2
 
 class CTU:
-    _mode:CTUEncodingMode
+    def __init__(self, mode:CTU_mode, size:float, refs:List[int]=[]):
+        self.mode = mode
+        self.size = size
+        self.refs = refs
 
-    def __init__(self, mode:CTUEncodingMode, *args):
-        self._mode = mode
+
+class CuMap:
     
-    @property
-    def mode(self):
-        return self._mode
+    def __init__(self, count:int, cu_size:int=64):
+        self.count = count
+        self.cu_size = cu_size
+        self._map:List[CTU] = [None] * count
 
+    @classmethod
+    def draw_ctus(cls, count:int, intra:float, inter:float, skip:float, merge:float, intra_mean:int, inter_mean:int, refs:List[int]=[]) -> List[CTU]:
+        return random.choices([
+            CTU(CTU_mode.INTRA, intra_mean),
+            CTU(CTU_mode.INTER, inter_mean, refs),
+            CTU(CTU_mode.SKIP, inter_mean, refs),
+            CTU(CTU_mode.MERGE, inter_mean, refs),
+        ], weights=[intra, inter, skip, merge], k=count)
 
+    def draw(self, *args, **kwargs):
+        self._map = self.draw_ctus(*args, **kwargs)
 
-class SliceStats(CsvRecord):
+    def draw_intra(self, intra_mean:int, idx:int=0, count:int=None) -> List[CTU]:
+        end = None
+        if count:
+            end = idx + count
+        self._map[idx:end] = [CTU(CTU_mode.INTRA, intra_mean)] * count
 
-    attributes = [
-        XRTM.INTRA_CTU_COUNT,
-        XRTM.INTRA_CTU_BITS,
-        XRTM.INTER_CTU_COUNT,
-        XRTM.INTER_CTU_BITS,
-        XRTM.SKIP_CTU_COUNT,
-        XRTM.SKIP_CTU_BITS,
-        XRTM.MERGE_CTU_COUNT,
-        XRTM.MERGE_CTU_BITS
-    ]
+    def get_slice(self, index:int, count:int) -> List[CTU]:
+        stop = index + count
+        return self._map[index:stop]
 
-    def __init__(self, data={}):
-        for h in self.attributes:
-            setattr(self, h.name, data.get(h.name, 0))
+    def update_slice(self, i:int, m:List[CTU]):
+        stop = i + len(m)
+        assert stop <= self.count
+        self._map[i:stop] = m
 
-    def add_intra_ctu(self, bits):
-        self.intra_ctu_count += 1
-        self.intra_ctu_bits += math.ceil(bits)
+    def dump(self, csv_out:str):
+        with open(csv_out, 'w') as f:
+            writer = CTU.get_csv_writer(f)
+            for ctu in self._map:
+                writer.writerow(ctu)
 
-    def add_inter_ctu(self, bits):
-        self.inter_ctu_count += 1
-        self.inter_ctu_bits += math.ceil(bits)
-
-    def add_skip_ctu(self):
-        self.skip_ctu_count += 1
-        self.skip_ctu_bits += math.ceil(8)
-
-    def add_merge_ctu(self, bits):
-        self.merge_ctu_count += 1
-        self.merge_ctu_bits += math.ceil(bits)
-    
-    @property
-    def total_size(self) -> int:
-        """
-        total bit size
-        """
-        return int(self.intra_ctu_bits + self.inter_ctu_bits + self.skip_ctu_bits + self.merge_ctu_bits)
-
-    @property
-    def ctu_count(self) -> int:
-        return int(self.intra_ctu_count + self.inter_ctu_count + self.skip_ctu_count + self.merge_ctu_count)
-
+    def load(self, csv_in:str) -> 'CtuMap':
+        data = []
+        with open(csv_in, 'r') as f:
+            data = [ctu for ctu in CTU.iter_csv_file(csv_in)]
+        assert len(data) == self.count
+        self._map = data
 
 #################################################################################################################################
 # models
@@ -271,7 +268,7 @@ class VTraceTx(CsvRecord):
     attributes = [
             # XRTM.VIEW_IDX
             XRTM.PTS,
-            XRTM.POC,
+            XRTM.ENCODE_ORDER,
             XRTM.CRF_REF,
 
             XRTM.INTRA_QP_REF,
@@ -377,15 +374,15 @@ class STraceTx(CsvRecord):
     attributes = [
         # XRTM.USER_IDX,
         XRTM.TIME_STAMP_IN_MICRO_S,
-        XRTM.INDEX,
-        XRTM.SIZE,
-        XRTM.EYE_BUFFER,
         XRTM.RENDER_TIMING,
-        XRTM.TYPE,
         XRTM.PRIORITY,
-        XRTM.START_ADDRESS_CU = CSV('start_address_cu', int, None),
-        XRTM.NUMBER_CUS = CSV('number_cus', int, None),
-        XRTM.FRAME_FILE = CSV('frame_file'),
+        XRTM.TYPE,
+        XRTM.SIZE,
+        XRTM.START_ADDRESS_CU,
+        XRTM.NUMBER_CUS,
+        XRTM.EYE_BUFFER,
+        XRTM.INDEX,
+        XRTM.FRAME_FILE
         # XRTM.BITS_REF,
         # XRTM.BITS_NEW,
         # XRTM.QP_REF,
@@ -402,10 +399,10 @@ class STraceTx(CsvRecord):
 
     @classmethod
     def from_slice(cls, s:'Slice') -> 'STraceTx':
-        st = cls()
+        st = cls({})
         st.time_stamp_in_micro_s = s.time_stamp_in_micro_s
         st.index = s.slice_idx
-        st.size = s.bits_new
+        st.size = s.size
         st.eye_buffer = s.view_idx
         st.render_timing = s.render_timing
         st.type = s.slice_type
@@ -413,6 +410,7 @@ class STraceTx(CsvRecord):
         st.start_address_cu = s.cu_address
         st.number_cus = s.cu_count
         st.frame_file = s.frame_file
+        st.eye_buffer = s.view_idx
         return st
 
 class STraceRx(STraceTx):
@@ -469,9 +467,11 @@ class PTraceRx(PTraceTx):
 class RateControl:
 
     def __init__(self, rc_max_bits=-1, crf=-1):
+        # from config
         self.max_bits = -1
-        self.crf = crf
-        self._crf = -1
+        self.target_crf = crf
+        # to be set on update
+        self._crf_ref = -1
         self._i_qp_ref = -1
         self._p_qp_ref = -1
 
@@ -481,11 +481,11 @@ class RateControl:
         self._p_qp_ref = vtrace.inter_qp_ref
         self._crf_ref = vtrate.crf_ref
 
-    def adjust(self, mode:SliceType, size:int):
-        qp = self._i_qp_ref if mode == SliceType.IDR else self._p_qp_ref
+    def adjust(self, slice_type:SliceType, size:int):
+        qp = self._i_qp_ref if slice_type == SliceType.IDR else self._p_qp_ref
 
         if self.max_bits > 0:
-            crf_new = self.crf_new if self.crf_new > 0 else self._crf_ref
+            crf_new = self.target_crf if self.target_crf > 0 else self._crf_ref
             bits_new = size
             while bits_new > self.max_bits:
                 crf_new += 1
@@ -494,8 +494,8 @@ class RateControl:
                     break
             return bits_new, qp_new 
 
-        elif self.crf_new > 0:
-            return model_crf_adjustment(size, self.crf_new, self._crf_ref, qp)
+        elif self.target_crf > 0:
+            return model_crf_adjustment(size, self.target_crf, self._crf_ref, qp)
             
         else:
             return size, qp
@@ -513,46 +513,36 @@ def model_pnsr_adjustment(qp_new, qp_ref, psnr):
 
 
 class Slice(Referenceable):
-
-    def __init__(self, frame_idx, slice_idx, cu_map, cu_address, cu_count, view_idx=0):
-        self.poc = poc
+    
+    def __init__(self, frame:'Frame', slice_idx:int):
+        
+        self._frame = frame
+        self.view_idx = frame.view_idx
+        self.frame_idx = frame.frame_idx
+        # assuming all slices in frame have an equal cu count
         self.slice_idx = slice_idx
-        self.cu_map = cu_map
-        self.cu_address = cu_idx
-        self.cu_count = cu_count
-
-        self.pts = -1
+        self.cu_count = frame.cu_per_slice
+        self.cu_address = frame.cu_per_slice * slice_idx
         self.slice_type = None
+
+        self.time_stamp_in_micro_s = -1
+        self.render_timing = -1
+
         self._referenceable = True
         self.refs = []
 
         self.priority = -1
-        self.intra_mean = None
-        self.inter_mean = None
         self.qp_ref = -1
-        self.qp_new = -1
-        self.bits_new = -1
+        self.qp = -1
+        self.size = -1
         self.y_psnr = -1
         self.u_psnr = -1
         self.v_psnr = -1
         self.yuv_psnr = -1
 
-        self.view_idx = 0
-        self.time_stamp_in_micro_s = -1
-        self.render_timing = -1
-
-
     @property
     def frame_file(self):
-        return f'{self.view_idx}_{self.poc}.csv'
-
-    @property
-    def bits_ref(self) -> int:
-        if self.stats == None:
-            assert self.bits_new == -1
-            return -1
-        else:
-           return self.stats.total_size
+        return self._frame.frame_file
 
     def get_referenceable_status(self):
         return self._referenceable
@@ -565,34 +555,43 @@ class Slice(Referenceable):
 
 class Frame:
 
-    def __init__(self, width:int, height:int, slices_per_frame:int, intra_mean:float, inter_mean:float, cu_size=64,):
-        self._intra_mean = math.ceil(intra_mean)
-        self._inter_mean = math.ceil(inter_mean)
+    def __init__(self, frame_idx:int, intra_mean:float, inter_mean:float, slices_per_frame:int, cu_per_slice:int, cu_count:int, cu_size:int, view_idx=0):
+        self.view_idx = view_idx
+        self.frame_idx = frame_idx
+        
+        self.intra_mean = intra_mean
+        self.inter_mean = inter_mean
+        
         self.slices_per_frame = slices_per_frame
-        self.cu_count = int(( width * height ) / ( cu_size * cu_size ))
-        self.cu_per_slice = int(( width / cu_size ) * height / ( slices_per_frame * cu_size ))
-        self.cu_map = CtuMap(self.cu_count)
+        self.cu_per_slice = cu_per_slice
+        self.cu_count = cu_count
+        self.cu_size = cu_size
+
+        self.cu_map = CuMap(cu_size)
         self.slices = []
+        
         for slice_idx in range(self.slices_per_frame):
-            cu_idx = self.cu_count * slice_idx
-            self.slices.append(
-                Slice(frame_idx, slice_idx, self.cu_map, cu_idx, self.cu_per_slice)
-            )
+            self.slices.append(Slice(self, slice_idx))
 
     def draw(self, *cu_distribution):
-        self.cu_map.draw(self.cu_count, *cu_distribution, self._intra_mean, self._inter_mean)
+        self.cu_map.draw(self.cu_count, *cu_distribution, self.intra_mean, self.inter_mean)
     
     def encode_slice(self, s:Slice, rc:RateControl, refs:List[int]):
         bit_size = 0
-        for cu in self.cu_map.get_slice:
-            if s.slice_type == SliceType.IDR:
-                cu.size = self._intra_mean
-            elif s.slice_type == SliceType.SKIP:
+        for cu in self.cu_map.get_slice(s.cu_address, s.cu_count):
+            if cu.mode == CTU_mode.INTRA:
+                cu.size = self.intra_mean
+            elif cu.mode in ( CTU_mode.INTER, CTU_mode.MERGE ):
+                cu.refs = refs
+                cu.size = self.inter_mean
+            elif cu.mode == CTU_mode.SKIP:
+                cu.refs = refs
                 cu.size = 8
             else:
-                cu.refs = refs[0]
-                cu.size = self._inter_mean
+                raise ValueError('Invalid CTU type')
             bit_size += cu.size
         return rc.adjust(s.slice_type, bit_size)
 
-
+    @property
+    def frame_file(self):
+        return f'{self.view_idx}_{self.frame_idx}.csv'

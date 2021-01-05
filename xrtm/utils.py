@@ -33,11 +33,11 @@ def plot(vtraces:List[VTraceTx], straces:List[STraceTx], nslices=1):
         NPLOTS = 4
         slices_by_poc = {}
         for s in straces:
-            if s['poc'] in slices_by_poc:
+            if s[XRTM.FRAME_IDX] in slices_by_poc:
                 for k in keys:
-                    slices_by_poc[s['poc']][k] += s[k]
+                    slices_by_poc[s[XRTM.FRAME_IDX]][k] += s[k]
             else:
-                slices_by_poc[s['poc']] = s
+                slices_by_poc[s[XRTM.FRAME_IDX]] = s
         agg = []
         for i in range(len(slices_by_poc.keys())):
             agg.append(slices_by_poc[i])
@@ -51,11 +51,11 @@ def plot(vtraces:List[VTraceTx], straces:List[STraceTx], nslices=1):
             return [t[key] for t in traces]
         return [t.__dict__[key] for t in traces]
         
-    vtx = filter(vtraces, 'poc')
+    vtx = filter(vtraces, XRTM.FRAME_IDX)
     vtIbits = filter(vtraces, 'intra_total_bits')
     vtPbits = filter(vtraces, 'inter_total_bits')
 
-    stx = filter(straces, 'poc')
+    stx = filter(straces, XRTM.FRAME_IDX)
     sty = filter(straces, XRTM.BITS_NEW.name)
 
     axs[0].plot( vtx, vtIbits, label='intra total ref', color='green')
@@ -63,7 +63,7 @@ def plot(vtraces:List[VTraceTx], straces:List[STraceTx], nslices=1):
     axs[0].plot( stx, sty, label='S-traces bits', color = 'red')
     # axs[0].plot( stx, sty_ref, label='S-traces bits_ref', color = 'orange')
     axs[0].set_ylabel('bit size')
-    axs[0].set_xlabel('poc')
+    axs[0].set_xlabel(XRTM.FRAME_IDX)
     axs[0].legend()
 
     intra_bits = filter(straces, XRTM.INTRA_CTU_BITS.name)
@@ -76,7 +76,7 @@ def plot(vtraces:List[VTraceTx], straces:List[STraceTx], nslices=1):
     axs[1].plot( stx, merge_bits, label='merge', color='chocolate')
     axs[1].plot( stx, skip_bits, label='skip', color='steelblue')
     axs[1].set_ylabel('total CTU bits')
-    axs[1].set_xlabel('poc')
+    axs[1].set_xlabel(XRTM.FRAME_IDX)
     axs[1].legend()
 
     intra_count = filter(straces, XRTM.INTRA_CTU_COUNT.name)
@@ -89,7 +89,7 @@ def plot(vtraces:List[VTraceTx], straces:List[STraceTx], nslices=1):
     axs[2].plot( stx, merge_count, label='merge', color='chocolate')
     axs[2].plot( stx, skip_count, label='skip', color='steelblue')
     axs[2].set_ylabel('CTU count')
-    axs[2].set_xlabel('poc')
+    axs[2].set_xlabel(XRTM.FRAME_IDX)
     axs[2].legend()
 
     intra_mean = filter(straces, XRTM.INTRA_MEAN.name)
@@ -97,7 +97,7 @@ def plot(vtraces:List[VTraceTx], straces:List[STraceTx], nslices=1):
     axs[3].plot( stx, intra_mean, label='intra medium value', color='green')
     axs[3].plot( stx, inter_mean, label='inter medium value', color='yellowgreen')
     axs[3].set_ylabel('bits')
-    axs[3].set_xlabel('poc')
+    axs[3].set_xlabel(XRTM.FRAME_IDX)
     axs[3].legend()
     
     if nslices == 1:
@@ -106,7 +106,7 @@ def plot(vtraces:List[VTraceTx], straces:List[STraceTx], nslices=1):
         axs[4].plot( stx, qp_new, label='qp_new', color='grey')
         axs[4].plot( stx, qp_ref, label='qp_ref', color='teal')
         axs[4].set_ylabel('QP')
-        axs[4].set_xlabel('poc')
+        axs[4].set_xlabel(XRTM.FRAME_IDX)
         axs[4].legend()
 
     plt.show()

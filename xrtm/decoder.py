@@ -7,7 +7,7 @@ from functools import reduce
 
 logger = Logger("xrtm decoder")
 
-class CTU_type(Enum):
+class CTU_mode(Enum):
     INTRA           = 0
     INTER           = 1
     MERGE           = 2
@@ -31,8 +31,8 @@ class CtuMap:
         return 
 
 class HrdCTU:
-    def __init__(self, ctu_type:int, rpl:List[int]):
-        self.ctu_type = ctu_type
+    def __init__(self, CTU_mode:int, rpl:List[int]):
+        self.CTU_mode = CTU_mode
         self.refs = rpl # a list of pictures referenced within this CTU
 
 class HrdSlice:
@@ -40,8 +40,8 @@ class HrdSlice:
         self.ctu_map = ctu_map
 
 class HrdFrame:
-    def __init__(self, poc:int, slices:List[HrdSlice]):
-        self.poc = poc
+    def __init__(self, frame_idx:int, slices:List[HrdSlice]):
+        self.frame_idx = frame_idx
         self.slices = slices
 
     @property
@@ -108,7 +108,7 @@ def model_ctu_references(decoding:HrdCTU, reference:HrdFrame) -> Iterable[HrdCTU
 
 def can_be_reconstructed(ctu:HrdCTU, dpb:List[HrdFrame]):
     for frame in dpb:
-        if ctu.ref == frame.poc:
+        if ctu.ref == frame.frame_idx:
             status = [referenced.status == CTU_status.OK for referenced in model_ctu_references(ctu, frame)]
             if len(status) > 0:
                 return False
@@ -174,11 +174,11 @@ class Decoder:
 
                 # update CTU map with received data
                 for ctu_idx, c in enumerate(received.slices[slice_idx].ctu_map):
-                    if c.type == CTU_type.INTRA:
+                    if c.type == CTU_mode.INTRA:
                         # If it is an intra CTU, mark it correct
                         reconstructed.slices[slice_idx].ctu_map[i].status = CTU_status.OK                    
                     else:
-                        assert c.type in [CTU_type.INTER, CTU_type.MERGE, CTU_type.SKIP], 'invalid CTU type'
+                        assert c.type in [CTU_mode.INTER, CTU_mode.MERGE, CTU_mode.SKIP], 'invalid CTU type'
                         if can_be_reconstructed(c, self.dpb):
                             reconstructed.slices[slice_idx].ctu_map[i].status = CTU_status.OK
                         else:

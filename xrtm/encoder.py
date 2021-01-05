@@ -4,6 +4,7 @@ import re
 import time
 import csv
 import json
+import math
 from enum import Enum, IntEnum
 from typing import List, Iterator
 
@@ -23,13 +24,12 @@ from .exceptions import (
 from .models import (
     VTraceTx,
     STraceTx,
-    SliceStats,
     SliceType,
     Slice,
     Frame,
     CTU,
-    CTUEncodingMode,
-    validates_ctu_distribution
+    RateControl,
+    model_pnsr_adjustment
 )
 
 from .utils import (
@@ -79,12 +79,19 @@ class EncoderConfig:
         self.gop_size = data.get('gop_size', -1)
         self.error_resilience_mode = ErrorResilienceMode.get(data.get('error_resilience_mode', 0))
         self.start_time = data.get('start_time', 0)
-        self.slice_delay = data.get('slice_delay', 8) / self.slices_per_frame
+        self.slice_delay = data.get('slice_delay', 1)
         self.interleaved = data.get('interleaved', True)
         self.render_jitter_min = data.get('render_jitter_min', 15)
         self.render_jitter_max = data.get('render_jitter_max', 25)
-        self.eye_buffer_delay = data.get('eye_buffer_delay', 1e+6 / (2 * self.frame_rate))
+        self.eye_buffer_delay = int(data.get('eye_buffer_delay', 1e+6 / (2 * self.frame_rate)))
         
+        # CTU map config
+        self.cu_size = data.get('cu_size', 64)
+        self.cu_count = int(( self.frame_width * self.frame_height ) / self.cu_size**2 )
+        self.cu_per_slice = int(( self.frame_width / self.cu_size ) * self.frame_height / ( self.slices_per_frame * self.cu_size ))
+        # slices/CU refs
+        self.max_refs = data.get('max_refs', 16)
+
     @classmethod
     def load(cls, path):
         with open(path, 'r') as f:
@@ -101,28 +108,25 @@ class RefPicList(ReferenceableList):
         self.pics = []
 
     def add_frame(self, pic:Frame):
-        if pic.is_idr_frame:
-            self.pics = [pic]
-        else:
-            self.pics.append(pic)
-            self.pics = self.pics[-self.max_size:]
+        self.pics.append(pic)
+        self.pics = self.pics[-self.max_size:]
 
-    def slice_refs(self, slice_idx): 
+
+    def iter(self, slice_idx): 
         for frame in reversed(self.pics):
             if frame.slices[slice_idx].referenceable:
-                yield frame.poc
+                yield frame.frame_idx
             if frame.slices[slice_idx].slice_type == SliceType.IDR:
                 return
 
     def set_referenceable_status(self, frame_idx:int, slice_idx:int, status:bool):
         for frame in reversed(self.pics):
-            if frame.poc == frame_idx:
+            if frame.frame_idx == frame_idx:
                 frame.slices[slice_idx].referenceable = status
                 return
 
     def reset(self):
         self.pics = []
-
 
 def get_intra_mean(vtrace, vtrace_ctu_count):
    return vtrace.intra_total_bits / vtrace_ctu_count
@@ -145,7 +149,7 @@ def validates_ctu_distribution(vt:VTraceTx, raise_exception=True) -> bool:
     total = vt.ctu_intra_pct + vt.ctu_inter_pct + vt.ctu_skip_pct + vt.ctu_merge_pct
     valid = round(total * 100) == 100
     if not valid:
-        e_msg = f'Invalid CTU distribution on frame {vt.poc} - sum of all CTUs is {total}%'
+        e_msg = f'Invalid CTU distribution on frame {vt.encode_order} - sum of all CTUs is {total}%'
         if raise_exception:
             raise VTraceTxException(e_msg)
         logger.critical(e_msg)
@@ -182,12 +186,11 @@ def validate_encoder_config(cfg):
     if ((cfg.frame_height / cfg.slices_per_frame ) % CTU_SIZE) != 0:
         raise EncoderConfigException(f'({cfg.frame_height}px / {cfg.slices_per_frame} slices) is not a multiple of {CTU_SIZE}')
 
-def is_perodic_intra_frame(frame_poc, gop_size, prev_idr_idx=0):
-    return (frame_poc == 0) | (((frame_poc - prev_idr_idx) % gop_size) == 0)
+def is_perodic_intra_frame(frame_idx:int, gop_size:int, offset=0):
+    return (frame_idx == 0) | (((frame_idx - offset) % gop_size) == 0)
 
-def is_perodic_intra_slice(slice_idx, slices_per_frame, frame_poc, prev_idr_idx=0):
-    return (frame_poc == 0) | (((frame_poc - prev_idr_idx) % slices_per_frame) == slice_idx)
-
+def is_perodic_intra_slice(slice_idx:int, slices_per_frame:int, frame_idx:int, offset=0):
+    return (frame_idx == 0) | (((frame_idx - offset) % slices_per_frame) == slice_idx)
 
 
 class AbstracEncoder(ABC):
@@ -199,15 +202,6 @@ class AbstracEncoder(ABC):
 
 class BaseEncoder(AbstracEncoder):
 
-    _cfg:EncoderConfig = None
-    _ctus_per_slices:int
-    _ctus_per_frame:int
-    
-    _feedback:FeedbackProvider = None
-    _prev_idr_idx:int = 0
-    _refs:RefPicList = RefPicList(max_size=MAX_REFS)
-    _rc_max_bits:int = -1
-
     @property
     def refs_list_0(self):
         return self._refs
@@ -215,87 +209,80 @@ class BaseEncoder(AbstracEncoder):
     def __init__(self, cfg:EncoderConfig, feedback_provider:FeedbackProvider=None, view_idx:int=0):
         
         validate_encoder_config(cfg)
+        self.view_idx = view_idx
+        self.cfg = cfg
+        self.rc = RateControl(self.cfg.rc_max_bits, self.cfg.crf)
 
         if cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED and feedback_provider == None:
             raise EncoderConfigException('Feedback based error resilience requires a feedback provider')
-
-        self._cfg = cfg
         self._feedback = feedback_provider
-        self._default_referenceable_status = cfg.error_resilience_mode != ErrorResilienceMode.FEEDBACK_BASED_ACK
-        
-        w = cfg.frame_width
-        h = cfg.frame_height
-        self._ctus_per_frame = int(( w * h ) / ( CTU_SIZE * CTU_SIZE ))
-        self._ctus_per_slice = int(( h / CTU_SIZE ) * h / ( cfg.slices_per_frame * CTU_SIZE ))
-
-        self.rc = RateControl(self._cfg.rc_max_bits, )
+        self._default_referenceable_status = self.cfg.error_resilience_mode != ErrorResilienceMode.FEEDBACK_BASED_ACK
+        self._refs = RefPicList(max_size=cfg.max_refs)
 
     def encode(self, vtrace:VTraceTx) -> Iterator[STraceTx]:
         
-        validates_ctu_distribution(vtrace, raise_exception=True)
-
-        intra_mean = get_intra_mean(vtrace, self._ctus_per_frame)
-        inter_mean = get_inter_mean(vtrace, self._ctus_per_frame)
-
         # frame type decision, based on error resilience mode
-        is_idr_frame = False
+        is_idr_frame = vtrace.encode_order == 0
         
-        if self._cfg.error_resilience_mode == ErrorResilienceMode.DISABLED:
+        if self.cfg.error_resilience_mode == ErrorResilienceMode.DISABLED:
             is_idr_frame = vtrace.is_full_intra
 
-        elif self._cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_FRAME:
-            is_idr_frame = is_perodic_intra_frame(vtrace.poc, self._cfg.gop_size, self._prev_idr_idx):
-
+        elif self.cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_FRAME:
+            is_idr_frame = is_perodic_intra_frame(vtrace.encode_order, self.cfg.gop_size)
         
-        elif self._cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
-            # is_idr_frame = (vtrace.poc == 0) or self._feedback.intra_refresh_status()
-            # if is_idr_frame: 
-            #     self._feedback.clear_intra_refresh_status()
+        elif self.cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
+            is_idr_frame = vtrace.is_full_intra
             self.rc.max_bits = self._feedback.rc_max_bits
 
-        frame = Frame(intra_mean, inter_mean)
-        frame.draw(*vtrace.cu_distribution)
+        validates_ctu_distribution(vtrace, raise_exception=True)
+        intra_mean = get_intra_mean(vtrace, self.cfg.cu_count)
+        inter_mean = get_inter_mean(vtrace, self.cfg.cu_count)
+        frame = Frame(vtrace.encode_order, intra_mean, inter_mean, self.cfg.slices_per_frame, self.cfg.cu_per_slice, self.cfg.cu_count, self.cfg.cu_size, view_idx=self.view_idx)
+        frame.draw(*vtrace.get_cu_distribution())
 
         for S in frame.slices:
-
             # slice type decision, based on error resilience mode
-            if self._cfg.error_resilience_mode == ErrorResilienceMode.DISABLED:
+            if self.cfg.error_resilience_mode == ErrorResilienceMode.DISABLED:
                 S.slice_type = SliceType.IDR if is_idr_frame else SliceType.P
             
-            if self._cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_SLICE:
-                if is_perodic_intra_slice(slice_idx, self._cfg.slices_per_frame, vtrace.poc, self._prev_idr_idx):
+            if self.cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_SLICE:
+                if is_perodic_intra_slice(S.slice_idx, self.cfg.slices_per_frame, vtrace.encode_order):
                     S.slice_type = SliceType.IDR
                 else:
                     S.slice_type = SliceType.P
-
-            elif self._cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
+            
+            elif self.cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
                 S.slice_type = SliceType.P if not is_idr_frame else SliceType.IDR 
                 self._refs = self._feedback.apply_feedback(self._refs)
 
             if S.slice_type == SliceType.P:
-                nearest = next(self._refs.slice_refs(slice_idx))
-                delta = frame_idx - nearest
-                if (delta > 1) and (inter_mean * delta) > (intra_mean * frame.cu_per_slice):
-                    S.slice_type == SliceType.IDR
+                try:
+                    nearest = next(self._refs.iter(S.slice_idx))
+                    delta = frame.frame_idx - nearest
+                    if (delta > 1) and (inter_mean * delta) > (intra_mean * frame.cu_per_slice):
+                        S.slice_type == SliceType.IDR
+                except StopIteration:
+                        pass
             
             # encode CTUs & bitrate adjustment 
-            qp, _, bit_size = frame.encode_slice(S, self.rc, self._refs.slice_refs(S.slice_idx))  
+            bits, qp = frame.encode_slice(S, self.rc, [*self._refs.iter(S.slice_idx)])
             S.qp = qp
-            S.size = math.ceil(bit_size / 8)
+            S.size = math.ceil(bits/8)
             
             # apply PSNR adjustment model
             for comp, ref in vtrace.get_psnr_ref(S.slice_type).items():
-                psnr_new = model_pnsr_adjustment(S.qp, vtrace.get_qp_ref(self.intra_qp_ref), ref)
+                psnr_new = model_pnsr_adjustment(S.qp, vtrace.get_qp_ref(S.slice_type), ref)
                 setattr(S, comp, psnr_new)
             
             frame.slices[S.slice_idx] = S
             yield STraceTx.from_slice(S)
 
         self._refs.add_frame(frame)
+        frame.cu_map 
 
 
-def render_jitter(cfg:EncoderConfig, frame_idx:int=0):
-    return random.randint(cfg.render_jitter_min, cfg.render_jitter_max) + (frame_idx * 1e+6 / cfg.frame_rate) + cfg.start_time * 1e+6
+def render_jitter(cfg:EncoderConfig) -> int:
+    return random.randint(cfg.render_jitter_min, cfg.render_jitter_max)
 
 class MonoEncoder:
     
@@ -305,8 +292,13 @@ class MonoEncoder:
         self.mono = BaseEncoder(cfg, feedback_provider=feedback_provider)
 
     def process(self, frames:Iterator[VTraceTx]) -> Iterator[Slice]:
+
+        fps = 1e+6 / self.cfg.frame_rate
+
         for vtrace in frames:
-            render_timing = render_jitter(self.cfg, self.frame_idx)
+            ts = int(vtrace.encode_order * fps) + self.cfg.start_time
+            render_timing = ts + render_jitter(self.cfg)
+
             for i, s in enumerate(self.mono.encode(vtrace)):
                 slice_delay = render_timing + (i * self.cfg.slice_delay)
                 s.render_timing = render_timing
@@ -322,46 +314,44 @@ class StereoEncoder:
         self.cfg = cfg # TODO: could be one per eye, has not been needed so far
         
         if feedback != None:
-            self._enc0 = BaseEncoder(cfg, feedback.enc0, view_idx=0)
-            self._enc1 = BaseEncoder(cfg, feedback.enc1, view_idx=1)
+            self._enc0 = BaseEncoder(cfg, feedback.enc0, view_idx=1)
+            self._enc1 = BaseEncoder(cfg, feedback.enc1, view_idx=2)
         else:
-            self._enc0 = BaseEncoder(cfg, None, view_idx=0)
-            self._enc1 = BaseEncoder(cfg, None, view_idx=1)
+            self._enc0 = BaseEncoder(cfg, None, view_idx=1)
+            self._enc1 = BaseEncoder(cfg, None, view_idx=2)
 
     def process(self, frames:Iterator[VTraceTx]) -> Iterator[Slice]:
-
+        
+        fps = 1e+6 / self.cfg.frame_rate
+        
         for vtrace in frames:
+            ts = int(vtrace.encode_order * fps) + self.cfg.start_time
+            render_timing = ts + render_jitter(self.cfg)
             
-            render_timing = render_jitter(self.cfg, self.frame_idx)
             eye_buff0 = self._enc0.encode(vtrace)
             eye_buff1 = self._enc1.encode(vtrace)
 
-            if not self.cfg.interleaved:
-                # both eyes encoded synchronously, slices sharing the same timings
+            if self.cfg.interleaved:
+                for i, s in enumerate(eye_buff0):
+                    slice_delay = (i * self.cfg.slice_delay)
+                    s.render_timing = render_timing
+                    s.time_stamp_in_micro_s = render_timing + slice_delay
+                    yield s
+                render_timing += self.cfg.eye_buffer_delay
+                for i, s in enumerate(eye_buff1):
+                    slice_delay = (i * self.cfg.slice_delay)
+                    s.render_timing = render_timing
+                    s.time_stamp_in_micro_s = render_timing + slice_delay
+                    yield s
+    
+            else:
                 for i, s0 in enumerate(eye_buff0):
-                    slice_delay = render_timing + (i * self.cfg.slice_delay)
+                    slice_delay = (i * self.cfg.slice_delay)
                     s0.render_timing = render_timing
-                    s0.time_stamp_in_micro_s = slice_delay
+                    s0.time_stamp_in_micro_s = render_timing + slice_delay
                     yield s0
                     s1 = next(eye_buff1)
                     s1.render_timing = render_timing
-                    s1.time_stamp_in_micro_s = slice_delay
+                    s1.time_stamp_in_micro_s = render_timing + slice_delay
                     yield s1
-        
-            else:
-                # each eye is encoded individually, each eye has its own timing (individual jitter + eye_buffer_delay)
-                for i, s in enumerate(eye_buff0):
-                    slice_delay = render_timing + (i * self.cfg.slice_delay)
-                    s.render_timing = render_timing
-                    s.time_stamp_in_micro_s = slice_delay
-                    yield s
-
-                # @NOTE: individual per eye render jitter is used
-                render_timing = self.cfg.eye_buffer_delay + render_jitter(self.cfg, self.frame_idx)
-                for i, s in enumerate(eye_buff1):
-                    slice_delay = render_timing + (i * self.cfg.slice_delay)
-                    s.render_timing = render_timing
-                    s.time_stamp_in_micro_s = slice_delay
-                    yield s
-    
 
