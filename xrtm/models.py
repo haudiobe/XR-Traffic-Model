@@ -161,7 +161,7 @@ class CsvEnum(Enum):
 
 class SliceType(CsvEnum):
     IDR = 1
-    P = 3
+    P = 2
 
 
 class XRTM(Enum):
@@ -187,6 +187,7 @@ class XRTM(Enum):
     SIZE = CSV("size", int, None)
     INDEX = CSV("index", int, None)
     EYE_BUFFER = CSV("eye_buffer", int, None)
+    TIME_STAMP_IN_MICRO_S = CSV("time_stamp_in_micro_s", int, None, -1)
     
     # VTraceTx
     VIEW_IDX = CSV("view_idx", int, None, -1) # 0: LEFT, 1: RIGHT
@@ -223,20 +224,17 @@ class XRTM(Enum):
     CU_MERGE = CSV("ctu_merge_pct", float)
 
     # PTraceTx
-    PCKT_SEQNUM = CSV("pckt_seqnum", int, None)
-    PCKT_AVAILABILITY = CSV("pckt_availability", int, None)
-    PCKT_SIZE = CSV("pckt_size", int, None)
-    PCKT_FRAGNUM = CSV("pckt_fragnum", int, None)
-    PCKT_IS_LAST = CSV("pckt_is_last", bool, int)
-    CN_JITTER_DELAY = CSV("cn_jitter_delay", int, None)
+    NUMBER = CSV("number", int, None)
+    NUMBER_IN_SLICE = CSV("number_in_slice", int, None)
+    LAST_IN_SLICE = CSV("last_in_slice", bool, int)
+    DELAY = CSV("delay", int, None)
     S_TRACE = CSV("s_trace", )
 
     # STraceTx
-    TIME_STAMP_IN_MICRO_S = CSV("time_stamp_in_micro_s", int, None, -1)
     SLICE_IDX = CSV("slice_idx", int)
     INTRA_MEAN = CSV("intra_mean", float)
     INTER_MEAN = CSV("inter_mean", float)
-    PRIORITY = CSV("priority", int, None, -1)
+    IMPORTANCE = CSV("importance", int, None, -1)
 
     RENDER_TIMING = CSV("render_timing", int)
     START_ADDRESS_CU = CSV('start_address_cu', int, None)
@@ -448,7 +446,7 @@ class STraceTx(CsvRecord):
         XRTM.INDEX,
         XRTM.TIME_STAMP_IN_MICRO_S,
         XRTM.RENDER_TIMING,
-        XRTM.PRIORITY,
+        XRTM.IMPORTANCE,
         XRTM.TYPE,
         XRTM.SIZE,
         XRTM.START_ADDRESS_CU,
@@ -473,7 +471,7 @@ class STraceTx(CsvRecord):
         st.eye_buffer = s.view_idx
         st.render_timing = s.render_timing
         st.type = s.slice_type
-        st.priority = s.priority
+        st.importance = s.importance
         st.start_address_cu = s.cu_address
         st.number_cus = s.cu_count
         st.frame_file = s.frame_file
@@ -487,57 +485,42 @@ class STraceRx(STraceTx):
 class PTraceTx(CsvRecord):
     
     attributes = [
-            # user_id	BIGINT	assigns an id to the user in order to differentiate
             XRTM.USER_ID,
-            # importance	BIGINT	assigned relative importance information (higher number means higher importance)
-            XRTM.PRIORITY,
-            # number	BIGINT	Unique packet number in the delivery
-            XRTM.PCKT_SEQNUM,
-            # number_in_slice	BIGINT	The number of the packet within the slice
-            XRTM.PCKT_FRAGNUM,
-            # last_in_slice	BIGINT	Indicates if this is the last packet in the slice 0=no, 1=yes
-            XRTM.PCKT_IS_LAST,
-            # size	BIGINT	packet size in bytes
-            XRTM.PCKT_SIZE,
-
-            # time_stamp_in_micro_s	BIGINT	Availability time of packet for next processing step relative to start time 0 in microseconds. (0 means lost)
-            XRTM.PCKT_AVAILABILITY,
-            # delay	BIGINT	Delay observed of the packet in the radio simulation (0 means lost)
-            XRTM.CN_JITTER_DELAY,
-
-            # index	BIGINT	Unique slice index increased by 1 and indexing this row in the S-Trace file.
+            XRTM.IMPORTANCE,
+            XRTM.NUMBER,
+            XRTM.NUMBER_IN_SLICE,
+            XRTM.LAST_IN_SLICE,
+            XRTM.SIZE,
+            XRTM.TIME_STAMP_IN_MICRO_S,
+            XRTM.DELAY,
             XRTM.INDEX,
-            # eye_buffer	BIGINT	The associated eye buffer 1=left 2=right
             XRTM.EYE_BUFFER,
-            # type	BIGINT	The slice type 1=intra 2=inter
             XRTM.TYPE,
-            # render_timing	BIGINT	the rendering generation timing associated to the frame
             XRTM.RENDER_TIMING,
-            # s_trace	STRING	Reference to s_trace file containing information for each slice
             XRTM.S_TRACE
+            
     ]
 
     HEADER_SIZE = 40
 
     def __init__(self, s:STraceTx, payload_size:int, seqnum:int, fragnum:int, is_last=False):
-
+        
         self._slice = s
-        self.pckt_size = payload_size 
-        self.pckt_seqnum = seqnum
-        self.pckt_fragnum = fragnum
-        self.pckt_is_last = is_last
-        self.cn_jitter_delay = 0
+        self.size = payload_size 
+        self.number = seqnum
+        self.number_in_slice = fragnum
+        self.last_in_slice = is_last
+        self.delay = 0
         self.user_id = 0
         self.lost = False
 
-
     @property
-    def pckt_availability(self):
-        return 0 if self.lost else self._slice.time_stamp_in_micro_s + self.cn_jitter_delay
+    def time_stamp_in_micro_s(self):
+        return 0 if self.lost else self._slice.time_stamp_in_micro_s + self.delay
     
     @property
-    def priority(self):
-        return self._slice.priority
+    def importance(self):
+        return self._slice.importance
 
 class PTraceRx(PTraceTx):
     """
@@ -613,7 +596,7 @@ class Slice(Referenceable):
 
         self._referenceable = True
 
-        self.priority = -1
+        self.importance = -1
         self.qp_ref = -1
         self.qp = -1
         self.size = -1

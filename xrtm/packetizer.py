@@ -9,7 +9,7 @@ def pack(i:int, s:STraceTx, mtu=1500, header_size=PTraceTx.HEADER_SIZE) -> Itera
     seqnum = i
     fragnum = 0
     max_payload_size = mtu - header_size
-    bytes_to_pack = ceil( s.bits_new / 8 )
+    bytes_to_pack = s.size
     while bytes_to_pack > max_payload_size:
         yield PTraceTx(s, max_payload_size, seqnum, fragnum, is_last=False)
         bytes_to_pack -= max_payload_size
@@ -41,7 +41,7 @@ class Packetizer:
         self._jitter_min = kwargs.get('jitter_min', 0)
         self._jitter_max = kwargs.get('jitter_max', 5)
         self.user_id = kwargs.get('user_id', 0)
-        print('\n\t> Jitter model - const:', self.constant_delay, '- jitter: ', self._jitter_min, '~', self._jitter_max )
+        # print('\n\t> Jitter model - const:', self.constant_delay, '- jitter: ', self._jitter_min, '~', self._jitter_max )
 
     def jitter(self):
         return self.constant_delay + randint(self._jitter_min, self._jitter_max)
@@ -55,10 +55,15 @@ class Packetizer:
                 seqnum += 1
                 p_in_slice += 1
                 p.user_id = self.user_id
-                p.cn_jitter_delay = self.jitter()
+                p.delay = self.jitter()
+                p.index = s.index
+                p.render_timing = s.render_timing
+                p.type = s.type
+                p.eye_buffer = s.eye_buffer
+                p.s_trace = None
                 yield p
             p_per_slice.append(p_in_slice)
-        print('\t> Fragments per slice - avg:', sum(p_per_slice) / len(p_per_slice), '- min:', min(*p_per_slice), '- max:', max(*p_per_slice) )
+        # print('\t> Fragments per slice - avg:', sum(p_per_slice) / len(p_per_slice), '- min:', min(*p_per_slice), '- max:', max(*p_per_slice) )
 
 
 class JitterBuffer:
@@ -86,10 +91,10 @@ class JitterBuffer:
     def iter_complete_slices(self) -> List[PTraceTx]:
         for _, packets in self._buffer.items():
             last = len(packets)-1
-            for i, p in enumerate(sorted(packets, key=lambda x: x.pckt_fragnum)):
+            for i, p in enumerate(sorted(packets, key=lambda x: x.number_in_slice)):
                 if p != i:
                     continue
-                if i == last and p.pckt_is_last:
+                if i == last and p.last_in_slice:
                     yield packets
 
 
@@ -128,9 +133,6 @@ class StereoJitterBuffer:
 class DePacketizer:
 
     def __init__(self, cfg):
-        """
-        initialize packetizer
-        """
         self.user_id:int = None
         self.time = 0
         self.delay_budget = 0
