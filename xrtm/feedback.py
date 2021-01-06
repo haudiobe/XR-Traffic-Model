@@ -107,7 +107,10 @@ class FeedbackProvider(ABC):
         raise NotImplementedError()
     
     @abstractmethod
-    def apply_feedback(self, rpl:ReferenceableList) -> ReferenceableList:
+    def update_rpl(self, rpl:ReferenceableList):
+        """
+        uses feedback to update referenceable status of all slices in list
+        """
         raise NotImplementedError()
 
 class RandomFeedbackGenerator(FeedbackProvider):
@@ -130,12 +133,11 @@ class RandomFeedbackGenerator(FeedbackProvider):
     def clear_intra_refresh_status(self):
         pass
     
-    def apply_feedback(self, rpl:ReferenceableList) -> ReferenceableList:
+    def update_rpl(self, rpl:ReferenceableList):
         for rp in rpl.pics:
             for s in rp.slices:
                 if s.referenceable == self.referenceable_default and random.randint(0, 100) < self.referenceable_ratio:
                     s.referenceable = not self.referenceable_default
-        return rpl
 
 
 class RandomStereoFeedback:

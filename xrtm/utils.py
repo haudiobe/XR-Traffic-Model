@@ -19,14 +19,14 @@ def plot(vtraces:List[VTraceTx], straces:List[STraceTx], nslices=1):
     NPLOTS = 5
     keys = [
         XRTM.BITS_NEW,
-        XRTM.INTRA_CTU_BITS,
-        XRTM.INTER_CTU_BITS,
-        XRTM.SKIP_CTU_BITS,
-        XRTM.MERGE_CTU_BITS,
-        XRTM.INTRA_CTU_COUNT,
-        XRTM.INTER_CTU_COUNT,
-        XRTM.SKIP_CTU_COUNT,
-        XRTM.MERGE_CTU_COUNT,
+        XRTM.INTRA_CU_BITS,
+        XRTM.INTER_CU_BITS,
+        XRTM.SKIP_CU_BITS,
+        XRTM.MERGE_CU_BITS,
+        XRTM.INTRA_CU_COUNT,
+        XRTM.INTER_CU_COUNT,
+        XRTM.SKIP_CU_COUNT,
+        XRTM.MERGE_CU_COUNT,
     ]
 
     if nslices > 1:
@@ -66,29 +66,29 @@ def plot(vtraces:List[VTraceTx], straces:List[STraceTx], nslices=1):
     axs[0].set_xlabel(XRTM.FRAME_IDX)
     axs[0].legend()
 
-    intra_bits = filter(straces, XRTM.INTRA_CTU_BITS.name)
-    inter_bits = filter(straces, XRTM.INTER_CTU_BITS.name)
-    merge_bits = filter(straces, XRTM.MERGE_CTU_BITS.name)
-    skip_bits = filter(straces, XRTM.SKIP_CTU_BITS.name)
+    intra_bits = filter(straces, XRTM.INTRA_CU_BITS.name)
+    inter_bits = filter(straces, XRTM.INTER_CU_BITS.name)
+    merge_bits = filter(straces, XRTM.MERGE_CU_BITS.name)
+    skip_bits = filter(straces, XRTM.SKIP_CU_BITS.name)
 
     axs[1].plot( stx, intra_bits, label='intra', color='yellowgreen')
     axs[1].plot( stx, inter_bits, label='inter', color='darkorange')
     axs[1].plot( stx, merge_bits, label='merge', color='chocolate')
     axs[1].plot( stx, skip_bits, label='skip', color='steelblue')
-    axs[1].set_ylabel('total CTU bits')
+    axs[1].set_ylabel('total CU bits')
     axs[1].set_xlabel(XRTM.FRAME_IDX)
     axs[1].legend()
 
-    intra_count = filter(straces, XRTM.INTRA_CTU_COUNT.name)
-    inter_count = filter(straces, XRTM.INTER_CTU_COUNT.name)
-    merge_count = filter(straces, XRTM.MERGE_CTU_COUNT.name)
-    skip_count = filter(straces, XRTM.SKIP_CTU_COUNT.name)
+    intra_count = filter(straces, XRTM.INTRA_CU_COUNT.name)
+    inter_count = filter(straces, XRTM.INTER_CU_COUNT.name)
+    merge_count = filter(straces, XRTM.MERGE_CU_COUNT.name)
+    skip_count = filter(straces, XRTM.SKIP_CU_COUNT.name)
 
     axs[2].plot( stx, intra_count, label='intra', color='yellowgreen')
     axs[2].plot( stx, inter_count, label='inter', color='darkorange')
     axs[2].plot( stx, merge_count, label='merge', color='chocolate')
     axs[2].plot( stx, skip_count, label='skip', color='steelblue')
-    axs[2].set_ylabel('CTU count')
+    axs[2].set_ylabel('CU count')
     axs[2].set_xlabel(XRTM.FRAME_IDX)
     axs[2].legend()
 
