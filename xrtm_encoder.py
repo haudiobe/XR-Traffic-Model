@@ -5,6 +5,7 @@ import random
 import logging
 import argparse
 from pathlib import Path
+import re
 
 from xrtm.utils import (
     read_csv_vtraces,
@@ -57,11 +58,11 @@ def mono_encoder(cfg):
 def main(cfg, vtrace_in:Path, strace_out:Path, stereo=True):
 
     encoder = stereo_encoder(cfg) if stereo else mono_encoder(cfg)
-
+    
     with open(strace_out, 'w', newline='') as f:
         writer = STraceTx.get_csv_writer(f)
         vtraces = VTraceTx.iter_csv_file(vtrace_in)
-        for s in encoder.process(vtraces):
+        for s in encoder.process(vtraces, getattr(cfg,'num_frames_to_process', 5) ):
             writer.writerow(s.get_csv_dict())
 
 if __name__ == '__main__':
@@ -89,8 +90,12 @@ if __name__ == '__main__':
     assert vtrace_in.exists(), 'vtrace file not found'
 
     if args.s_trace == None:
-        strace_out = vtrace_in.parent / f'{vtrace_in.stem}.strace.csv'
+        basename = re.sub('\.vtrace$', '', vtrace_in.stem)
+        strace_out = vtrace_in.parent / f'{basename}.strace.csv'
+        cfg.frames_dir = vtrace_in.parent / f'{basename}_frames'
     else:
         strace_out = Path(args.s_trace)
+        cfg.frames_dir = strace_out.parent / f'{strace_out.stem}_frames'
 
+    cfg.frames_dir.mkdir(parents=True, exist_ok=True)
     main(cfg, vtrace_in, strace_out, stereo=True)
