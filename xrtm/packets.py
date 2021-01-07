@@ -93,15 +93,15 @@ class JitterBuffer:
                     yield idx
                     continue
     
-    def iter_complete_slices(self) -> Iterator[int]:
+    def iter_complete_slices(self) -> Iterator[List[int]]:
         for idx, slice_packets in self._buffer.items():
             if len(slice_packets) == 1 and not slice_packets[0].is_fragment():
-                yield idx
+                yield idx, slice_packets[0].delay
             else:
                 packets = sorted(slice_packets, key=lambda x: x.number_in_slice)
                 p = packets[-1]
                 if p.last_in_slice and p.number_in_slice == len(packets)-1:
-                    yield idx
+                    yield idx, p.delay
 
 
 class StereoJitterBuffer:
@@ -136,11 +136,11 @@ class StereoJitterBuffer:
         for s in self.right_buffer.iter_late_slices(deadline):
             yield s
 
-    def iter_complete_slices(self) -> Iterator[int]:
-        for s in self.left_buffer.iter_complete_slices():
-            yield s
-        for s in self.right_buffer.iter_complete_slices():
-            yield s
+    def iter_complete_slices(self) -> Iterator[List[int]]:
+        for s, delay in self.left_buffer.iter_complete_slices():
+            yield s, delay
+        for s, delay in self.right_buffer.iter_complete_slices():
+            yield s, delay
 
 
 class DePacketizer:
@@ -151,12 +151,12 @@ class DePacketizer:
         """
         self.user_id = getattr(cfg, 'user_id', 0)
         self.time = getattr(cfg, 'start_time', 0)
-        self.delay_budget = getattr(cfg, 'delay_budget', 50)
+        self.delay_budget = 1e3 * getattr(cfg, 'delay_budget', 50)
         self.buffer = StereoJitterBuffer()
         self.strace_file_check = getattr(cfg, 'strace_file_check', True)
         self.strace_file = getattr(cfg, 'strace_file', str(strace_file)) 
         self.strace_data = [*STraceTx.iter_csv_file(strace_file)]
-        
+    
     def process(self, timestamp:int, packets:List[PTraceTx]) -> List[STraceTx]:
         for p in packets:
             assert p.user_id == self.user_id
@@ -165,13 +165,14 @@ class DePacketizer:
             self.buffer.append(p)
 
         # remove late packets from the buffer
-        deadline = timestamp + self.delay_budget
+        deadline = timestamp - self.delay_budget
         for idx in [*self.buffer.iter_late_slices(deadline)]:
             self.buffer.delete(idx)
 
         # yield index of slices that can be reconstructed from buffered packets
-        for idx in self.buffer.iter_complete_slices():
+        for idx, delay in [*self.buffer.iter_complete_slices()]:
             self.buffer.delete(idx)
-            yield self.strace_data[idx]
-        
+            s = self.strace_data[idx]
+            s.time_stamp_in_micro_s += delay
+            yield s
 

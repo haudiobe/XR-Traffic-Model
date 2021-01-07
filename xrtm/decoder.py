@@ -102,7 +102,6 @@ def model_ctu_references(decoding:HrdCU, reference:HrdFrame) -> Iterable[HrdCU]:
         if is_ref:
             yield rc[i]
 
-
 def can_be_reconstructed(ctu:HrdCU, dpb:List[HrdFrame]):
     for frame in dpb:
         if ctu.ref == frame.frame_idx:
@@ -112,6 +111,55 @@ def can_be_reconstructed(ctu:HrdCU, dpb:List[HrdFrame]):
             else:
                 return reduce(lambda r, item: (r and item), status)
     return False
+"""
+class RxFeedbackHandler:
+
+    def report_lost_slice(self, frame_idx, slice_idx):
+        print(f'NACK - frame:{frame_idx}, slice:{slice_idx}')
+
+    def report_received_slice(self, frame_idx, slice_idx):
+        print(f'ACK - frame:{frame_idx}, slice:{slice_idx}')
+
+class Decoder:
+
+    def __init__(self, **cfg):
+        self.cfg = cfg
+        self.feedback = RxFeedbackHandler()
+        self.frame_duration = 1e6/60.0
+        self.step_time = 0 # microseconds
+        self.frame_time = 0 # microseconds
+        self.vtrace_rx = getattr(cfg, 'vtrace_rx', None)
+        self.frames_dir_tx = getattr(cfg, 'frames_tx', None)
+        self.frames_dir_rx = getattr(cfg, 'frames_rx', None)
+        self.received = []
+        self.reconstructed:Frame = None
+        self.cu_map = CuMap(cfg.cu_per_frame)
+
+    def process_step(ts:int, straces:List[STraceTx]):
+        assert (ts - self.step_time) < self.frame_duration, f'invalid time step increment, must be smaller than frame_duration: {self.frame_duration}'
+        self.step_time = ts
+        self.received += straces
+        if self.step_time < (self.frame_time + self.frame_duration):
+            return
+        
+        self.frame_time += self.frame_duration
+        self.frame_idx += 1
+        received = sorted(self.received, key: lambda x: x.index)
+        
+        for s in received:
+            if s.time_stamp_in_micro_s < self.render_timing + self.delay_budget:
+                self.feedback.report_received_slice(-1, slice_idx)
+
+
+            else:
+                self.feedback.report_lost_slice(-1, slice_idx)
+
+
+        else:
+            while self.timestamp + self.frame_duration < ts:
+                self.timestamp += self.frame_duration
+"""
+
 
 
 class Decoder:

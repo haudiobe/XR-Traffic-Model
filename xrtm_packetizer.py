@@ -4,7 +4,7 @@ import csv
 import re
 from pathlib import Path
 from typing import Iterable
-from xrtm.packetizer import Packetizer, PTraceTx
+from xrtm.packets import Packetizer, PTraceTx
 from xrtm.models import STraceTx
 
 if __name__ == "__main__":

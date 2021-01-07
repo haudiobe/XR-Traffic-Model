@@ -28,17 +28,37 @@ python3 -m venv ./myvenv
 
 ## Usage
 
-Explicit configuration options need to be passed over as command line arguments. For the full list of options and their default values, just run:
+1. generate S trace from V trace
 ```
-(myvenv) python ./xrtm_encoder.py -v ./vtrace.csv -s ./strace.csv
-(myvenv) python ./xrtm_packetizer.py -s ./strace.csv -p ./ptrace.csv
+(myvenv) python ./xrtm_encoder.py -c ./encoder.cfg -v ./myfile.vtrace.csv 
 ```
+outputs `./myfile.strace.csv`
+
+2. generate P trace from S trace
+```
+(myvenv) python ./xrtm_packetizer.py -s ./myfile.strace.csv 
+```
+outputs `./myfile.ptrace.csv`
+
+3. reconstruct from P' trace
+```
+(myvenv) python ./xrtm_packetizer.py -p ./myfile.ptrace.csv -s ./myfile.strace.csv 
+```
+outputs `./myfile.strace-rx.csv`
+***NOTE !*** currently, only S'Trace is generated. V'Trace implementation and feedback implementation is under active development. 
 
 ### CSV format
 
-see `./sample.vtrace.csv` for sample data
-the csv property names have are not yet updated
+see `./sample.vtrace.csv` for sample data.
+***NOTE !*** the csv property names have are not yet updated.
 
 ### configuration
 
+#### strace generation
 see `./encoder.cfg`
+
+#### ptrace generation
+***TODO*** (network delay, ...)
+
+#### reconstruction
+***TODO***

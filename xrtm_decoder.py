@@ -4,8 +4,8 @@ import csv
 import re
 from pathlib import Path
 from typing import Iterator, List
-from xrtm.packetizer import DePacketizer, PTraceTx
-from xrtm.models import STraceTx, XRTM
+from xrtm.packets import DePacketizer, PTraceTx
+from xrtm.models import XRTM, STraceTx, Frame, Slice, CuMap, CU_mode, CU_status, CU
 
 
 class PacketStream:
@@ -38,7 +38,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Decoder configuration')
     parser.add_argument('-p', '--p_trace', type=str, help='p-trace csv input', required=True)
-    parser.add_argument('-s', '--s_trace', type=str, help='s-trace csv output', required=True)
+    parser.add_argument('-s', '--s_trace', type=str, help='s-trace csv input', required=True)
     
     args = parser.parse_args()
     
@@ -50,15 +50,17 @@ if __name__ == "__main__":
     
     strace_out = strace_in.parent / f'{strace_in.stem}-rx.csv'
     
-    step = 1e6/60
+    # all timestamps use microsecond accuracy
     cfg = {
         'user_id': 0,
         'start_time': 0,
-        'delay_budget': 50,
+        'delay_budget_ms': 50,
         'strace_file_check': True,
         'strace_file': str(strace_in)
-    } 
+    }
+    step = 1e6/60
     unpack = DePacketizer(strace_in, cfg)
+    assert unpack.delay_budget > step, 'timestep must be higher than delay budget'
     packets = PacketStream(ptrace_in)
     t0 = 0 # packets.peak().time_stamp_in_micro_s
 
