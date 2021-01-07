@@ -1,7 +1,8 @@
 from random import randint
-from typing import Iterable, List
+from typing import Iterable, List, Iterator
 from math import ceil
 from enum import Enum
+from pathlib import Path
 
 from .models import STraceTx, PTraceTx, PTraceRx, STraceRx, XRTM, CSV, CsvRecord
 
@@ -11,20 +12,23 @@ def pack(i:int, s:STraceTx, mtu=1500, header_size=PTraceTx.HEADER_SIZE) -> Itera
     max_payload_size = mtu - header_size
     bytes_to_pack = s.size
     while bytes_to_pack > max_payload_size:
-        yield PTraceTx(s, max_payload_size, seqnum, fragnum, is_last=False)
+        yield PTraceTx.from_strace(s, size=bytes_to_pack, number=seqnum, number_in_slice=fragnum, is_last=False)
         bytes_to_pack -= max_payload_size
         seqnum += 1
         fragnum += 1
-    yield PTraceTx(s, bytes_to_pack, seqnum, fragnum, is_last=True)
+    yield PTraceTx.from_strace(s, size=bytes_to_pack, number=seqnum, number_in_slice=fragnum, is_last=True)
 
 # TODO: should receive PTraceRx
-def unpack(*packets:List[PTraceTx]) -> STraceTx:
+def unpack(*packets:List[PTraceTx]) -> int:
+    """
+    asserts a list of packets can be decoded into a slice
+    """
     p = packets[0]
     if len(packets) == 1:
-        return p.slice
+        return p.index
     user_id = p.user_id
-    view_idx = p.view_idx
-    slice_idx = p.slice_idx
+    view_idx = p.eye_buffer
+    index = p.index
     for _, p in enumerate(sorted(packets, key=lambda x: x.fragnum)):
         if p.is_last:
             assert p.fragnum == len(packets)-1
@@ -73,29 +77,31 @@ class JitterBuffer:
     
     # TODO: should receive PTraceRx
     def append(self, p:PTraceTx):
-        if p.slice_idx not in self._buffer:
-            self._buffer[p.slice_idx] = [p]
+        if p.index not in self._buffer:
+            self._buffer[p.index] = [p]
         else:
-            self._buffer[p.slice_idx].append(p)
+            self._buffer[p.index].append(p)
 
-    def delete(self, slice_idx):
-        self._buffer.pop(slice_idx)
+    def delete(self, idx):
+        assert idx in self._buffer
+        self._buffer.pop(idx)
 
-    def iter_late_slices(self, timestamp:int):
-        for slice_idx, packets in self._buffer.items():
-            for p in packets:
-                if p.packet_availability <= timestamp:
-                    yield slice_idx
+    def iter_late_slices(self, deadline:int) -> Iterator[int]:
+        for idx, slice_packets in self._buffer.items():
+            for p in slice_packets:
+                if p.time_stamp_in_micro_s <= deadline:
+                    yield idx
                     continue
     
-    def iter_complete_slices(self) -> List[PTraceTx]:
-        for _, packets in self._buffer.items():
-            last = len(packets)-1
-            for i, p in enumerate(sorted(packets, key=lambda x: x.number_in_slice)):
-                if p != i:
-                    continue
-                if i == last and p.last_in_slice:
-                    yield packets
+    def iter_complete_slices(self) -> Iterator[int]:
+        for idx, slice_packets in self._buffer.items():
+            if len(slice_packets) == 1 and not slice_packets[0].is_fragment():
+                yield idx
+            else:
+                packets = sorted(slice_packets, key=lambda x: x.number_in_slice)
+                p = packets[-1]
+                if p.last_in_slice and p.number_in_slice == len(packets)-1:
+                    yield idx
 
 
 class StereoJitterBuffer:
@@ -106,24 +112,31 @@ class StereoJitterBuffer:
 
     # TODO: should receive PTraceRx
     def append(self, p:PTraceTx):
-        if p.slice.is_left:
+        if p.eye_buffer == 1:
             self.left_buffer.append(p)
-        elif p.slice.is_right:
+        elif p.eye_buffer == 2:
             self.right_buffer.append(p)
         else:
-            raise ValueError('invalid packet')
+            raise ValueError(f'invalid eye buffer {p.eye_buffer}')
 
-    def delete(self, slice_idx):
-        self.left_buffer.delete(slice_idx)
-        self.right_buffer.delete(slice_idx)
-    
-    def iter_late_slices(self, timestamp:int):
-        for s in self.left_buffer.iter_late_slices(timestamp):
+    def delete(self, slice_idx:int):
+        # TODO: needs improvements as deleting from both buffers raises a KeyError
+        try:
+            self.left_buffer.delete(slice_idx)
+        except AssertionError:
+            pass
+        try:
+            self.right_buffer.delete(slice_idx)
+        except AssertionError:
+            pass
+
+    def iter_late_slices(self, deadline:int) -> Iterator[int]:
+        for s in self.left_buffer.iter_late_slices(deadline):
             yield s
-        for s in self.right_buffer.iter_late_slices(timestamp):
+        for s in self.right_buffer.iter_late_slices(deadline):
             yield s
 
-    def iter_complete_slices(self) -> List[PTraceTx]:
+    def iter_complete_slices(self) -> Iterator[int]:
         for s in self.left_buffer.iter_complete_slices():
             yield s
         for s in self.right_buffer.iter_complete_slices():
@@ -132,34 +145,33 @@ class StereoJitterBuffer:
 
 class DePacketizer:
 
-    def __init__(self, cfg):
-        self.user_id:int = None
-        self.time = 0
-        self.delay_budget = 0
+    def __init__(self, strace_file:Path, cfg={}):
+        """
+        a class to process timestamped buckets of incoming PTrace into decodable Strace
+        """
+        self.user_id = getattr(cfg, 'user_id', 0)
+        self.time = getattr(cfg, 'start_time', 0)
+        self.delay_budget = getattr(cfg, 'delay_budget', 50)
         self.buffer = StereoJitterBuffer()
-    
-    def availability_deadline(self):
-        return self.time + self.delay_budget
-
-    # TODO: should receive PTraceRx
-    def process(self, timestep:int, packets:List[PTraceTx]):
-        """
-        decode packets received over the given timestep
-        """
-        self.time += timestep
-        # append incoming packets to the jitterbuffer
+        self.strace_file_check = getattr(cfg, 'strace_file_check', True)
+        self.strace_file = getattr(cfg, 'strace_file', str(strace_file)) 
+        self.strace_data = [*STraceTx.iter_csv_file(strace_file)]
+        
+    def process(self, timestamp:int, packets:List[PTraceTx]) -> List[STraceTx]:
         for p in packets:
             assert p.user_id == self.user_id
-            if p.fragnum == 0 and p.is_last: # no fragmentation
-                yield unpack(p)
-            else: # fragmented
-                self.buffer.append(p)
+            if self.strace_file_check:
+                assert p.s_trace == self.strace_file
+            self.buffer.append(p)
 
-        # drop late packets / slices
-        for slice_idx in self.buffer.iter_late_slices(self.availability_deadline):
-            self.buffer.delete(slice_idx)
+        # remove late packets from the buffer
+        deadline = timestamp + self.delay_budget
+        for idx in [*self.buffer.iter_late_slices(deadline)]:
+            self.buffer.delete(idx)
 
-        # yield slices for which we have all packets
-        for packets in self.buffer.iter_complete_slices():
-            yield unpack(packets)
+        # yield index of slices that can be reconstructed from buffered packets
+        for idx in self.buffer.iter_complete_slices():
+            self.buffer.delete(idx)
+            yield self.strace_data[idx]
+        
 

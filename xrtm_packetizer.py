@@ -12,6 +12,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Model encoder configuration')
     parser.add_argument('-s', '--s_trace', type=str, help='s-trace csv input', required=True)
     parser.add_argument('-p', '--p_trace', type=str, help='p-trace csv output', required=False)
+    
     args = parser.parse_args()
     
     strace_in = Path(args.s_trace)

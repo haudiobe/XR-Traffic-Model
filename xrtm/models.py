@@ -498,29 +498,23 @@ class PTraceTx(CsvRecord):
             XRTM.TYPE,
             XRTM.RENDER_TIMING,
             XRTM.S_TRACE
-            
     ]
 
     HEADER_SIZE = 40
-
-    def __init__(self, s:STraceTx, payload_size:int, seqnum:int, fragnum:int, is_last=False):
-        
-        self._slice = s
-        self.size = payload_size 
-        self.number = seqnum
-        self.number_in_slice = fragnum
-        self.last_in_slice = is_last
-        self.delay = 0
-        self.user_id = 0
-        self.lost = False
-
-    @property
-    def time_stamp_in_micro_s(self):
-        return 0 if self.lost else self._slice.time_stamp_in_micro_s + self.delay
     
-    @property
-    def importance(self):
-        return self._slice.importance
+    def is_fragment(self) ->  bool:
+        return not (self.number_in_slice == 0 and self.last_in_slice)
+
+    @classmethod
+    def from_strace(cls, s:STraceTx, **kwargs) -> 'PTraceTx':
+        p = cls(kwargs)
+        p.importance = s.importance
+        p.render_timing = s.render_timing
+        p.eye_buffer = s.eye_buffer
+        p.type = s.slice_type
+        p.time_stamp_in_micro_s = s.time_stamp_in_micro_s + p.delay
+        return p
+
 
 class PTraceRx(PTraceTx):
     """
