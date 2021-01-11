@@ -135,7 +135,7 @@ class EncoderConfig:
         if user_idx < 0:
             p = p.parent / f'{p.stem}.frames/'
         else:
-            p = p.parent / f'{p.stem}__{user_idx}.frames/'
+            p = p.parent / f'{p.stem}[{str(user_idx)}].frames/'
         if mkdir:
             if overwrite and p.exists() and p.is_dir:
                 shutil.rmtree(p)
@@ -147,7 +147,7 @@ class EncoderConfig:
         if user_idx < 0:
             return p
         else:
-            return p.parent / f'{p.stem}__{user_idx}' + p.suffix
+            return p.parent / f'{p.stem}[{str(user_idx)}]{p.suffix}'
 
     @classmethod
     def parse_config(cls, data:dict):

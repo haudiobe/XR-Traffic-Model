@@ -33,7 +33,7 @@ class PacketizerConfig:
         cfg.pckt_max_size = int(packet.get("maxSize", 1500)) # bytes
         cfg.pckt_overhead = int(packet.get("overhead", 40))
 
-        cfg.bitrate = int(data.get("Bitrate", 45000000))
+        cfg.bitrate = int(data.get("Bitrate", 45000000)) # bits/s
         _requires("P-Trace", data, "invalid config. no P-Trace output definition")
         cfg.output = Path(data["P-Trace"])
         return cfg
@@ -43,14 +43,14 @@ class PacketizerConfig:
         if user_idx < 0:
             return p
         else:
-            return p.parent / f'{p.stem}__{user_idx}' + p.suffix
+            return p.parent / f'{p.stem}[{str(user_idx)}]{p.suffix}'
 
     def get_ptrace_output(self, user_idx=-1):
         p = Path(self.output)
         if user_idx < 0:
             return p
         else:
-            return p.parent / f'{p.stem}__{user_idx}' + p.suffix
+            return p.parent / f'{p.stem}[{str(user_idx)}]{p.suffix}'
 
     @classmethod
     def load(cls, p:Path):
@@ -63,7 +63,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Model encoder configuration')
     parser.add_argument('-c', '--config', type=str, help='packetizer config', required=True)
-    parser.add_argument('-u', '--user_id', type=str, help='user id', required=False, default=-1)
+    parser.add_argument('-u', '--user_id', type=int, help='user id', required=False, default=-1)
     
     args = parser.parse_args()
     
