@@ -170,7 +170,7 @@ class BaseEncoder(AbstracEncoder):
         elif self.rc.mode == RC_mode.CBR and (size < budget):
             qp = int(max(frame.i_qp, frame.p_qp))
             while size < budget:
-                if self.rc.qp_min > 0 and qp < self.self.rc.qp_min:
+                if self.rc.qp_min > 0 and qp < self.rc.qp_min:
                     break
                 size = frame.encode(qp, self.refs) * 8
                 qp -= 1
@@ -243,11 +243,14 @@ class MultiViewEncoder:
         for vtrace, enc in zip(vtraces, self.buffers):
             refresh = ''
             frame_file = f'{self.frame_idx}_{buff_idx}.csv'
+            slice_delay = 0
             for s in enc.encode(vtrace, feedback):
                 s.frame_idx = self.frame_idx
                 s.render_timing = round(timestamp)
-                s.time_stamp_in_micro_s = round(timestamp + self.cfg.get_encoding_delay() + self.cfg.get_buffer_delay(buff_idx))
+                slice_delay += self.cfg.get_encoding_delay()
+                s.time_stamp_in_micro_s = round(timestamp + slice_delay + self.cfg.get_buffer_delay(buff_idx))
                 s.index = self.slice_idx
+                s.eye_buffer = buff_idx
                 s.frame_file = frame_file
                 refresh += str(s.type.value)
                 straces.append(s)

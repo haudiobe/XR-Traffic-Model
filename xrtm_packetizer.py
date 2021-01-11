@@ -83,7 +83,7 @@ if __name__ == "__main__":
             for p in pack.process([trace], seqnum):
 
                 p.s_trace = str(source)
-                p.time_stamp_in_micro_s = round(p.time_stamp_in_micro_s + rate_delay)
+                p.time_stamp_in_micro_s += round(p.time_stamp_in_micro_s + rate_delay)
                 writer.writerow(p.get_csv_dict())
 
                 rate_delay += cfg.bitrate / (p.size * 8)
