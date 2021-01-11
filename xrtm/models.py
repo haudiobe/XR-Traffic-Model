@@ -43,9 +43,9 @@ class Delay:
         self.mode = str(params.get("mode", "constant")).lower()
         assert self.mode in [self.CONSTANT, self.EQUALLY, self.GAUSSIANTRUNC]
         # timestamps are expressed in micro seconds
-        self.parameter1 = int(params.get("parameter1", 0)) * 1e3
-        self.parameter2 = int(params.get("parameter2", 0)) * 1e3
-        self.parameter3 = int(params.get("parameter3", 0)) * 1e3
+        self.parameter1 = float(params.get("parameter1", 0)) * 1e3
+        self.parameter2 = float(params.get("parameter2", 0)) * 1e3
+        self.parameter3 = float(params.get("parameter3", 0)) * 1e3
 
     def get_delay(self):
         if self.mode == self.CONSTANT:
@@ -55,20 +55,20 @@ class Delay:
             return random.uniform(self.parameter1, self.parameter2)
 
         if self.mode == self.GAUSSIANTRUNC:
-            lower, upper = 0, self.parameter3
             mean, std = self.parameter1, self.parameter2
+            lower, upper = mean - self.parameter3, mean + self.parameter3
             a, b = (lower - mean) / std, (upper - mean) / std
             return stats.truncnorm( a, b, loc=mean, scale=std).rvs()
 
 class EncodingDelay(Delay):
     
-    def get_delay(self, no_slices:float, frame_interval:float):
+    def get_delay(self, no_slices:float, frame_interval_ms:float):
         if self.mode == self.GAUSSIANTRUNC:
             mean, std = self.parameter1 / no_slices, self.parameter2 / no_slices
-            jitter = self.parameter3 / (frame_interval * no_slices)
-            lower, upper = mean - jitter, mean + jitter
+            lower, upper = 0, frame_interval_ms / no_slices
             a, b = (lower - mean) / std, (upper - mean) / std
-            return stats.truncnorm( a, b, loc=mean, scale=std).rvs()
+            r = stats.truncnorm(a, b, loc=mean, scale=std).rvs()
+            return r
         else:
             return super().get_delay()
 
@@ -110,8 +110,8 @@ class EncoderConfig:
     def get_cu_per_slice(self):
         return int(( self.frame_width / self.cu_size ) * self.frame_height / ( self.slices_per_frame * self.cu_size ))
 
-    def get_frame_duration(self) -> float:
-        return 1e6 / self.frame_rate
+    def get_frame_duration(self, unit=1e6) -> float:
+        return unit / self.frame_rate
 
     def get_pre_delay(self):
         if self._pre_delay == None:
@@ -121,7 +121,7 @@ class EncoderConfig:
     def get_encoding_delay(self):
         if self._encoding_delay == None:
             return 0
-        return self._encoding_delay.get_delay(self.slices_per_frame, self.get_frame_duration())
+        return self._encoding_delay.get_delay(self.slices_per_frame, self.get_frame_duration(unit=1e3))
     
     def get_buffer_delay(self, buff_idx:int):
         """
@@ -892,14 +892,14 @@ class Frame:
                     cu.psnr_y = p_y_psnr
                     cu.psnr_yuv = p_yuv_psnr
                     cu.reference = rpl[0]
-                    cu.size = math.ceil(random.gauss(self.inter_mean, math.sqrt(self.inter_mean * 0.2)) * p_qp_factor / 8)
+                    cu.size = math.ceil(random.gauss(self.inter_mean, self.inter_mean * 0.2) * p_qp_factor)
                 else:
                     assert cu.mode == CU_mode.INTRA
                     cu.qp = i_qp
                     cu.psnr_y = i_y_psnr
                     cu.psnr_yuv = i_yuv_psnr
                     cu.reference = None
-                    cu.size = math.ceil(random.gauss(self.intra_mean, math.sqrt(self.intra_mean * 0.1)) * i_qp_factor / 8)
+                    cu.size = math.ceil(random.gauss(self.intra_mean, self.intra_mean * 0.1) * i_qp_factor)
                 slice_size += cu.size
             s.size = slice_size
             frame_size += slice_size

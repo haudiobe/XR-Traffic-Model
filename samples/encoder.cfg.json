@@ -1,11 +1,11 @@
 {
     "Buffers": [
         {
-            "V-Trace": "./samples/left.csv",
+            "V-Trace": "./samples/V-Trace-left.csv",
             "buffer": "left"
         },
         {
-            "V-Trace": "./samples/right.csv",
+            "V-Trace": "./samples/V-Trace-right.csv",
             "buffer": "right"
         }
     ],
@@ -18,11 +18,11 @@
     },
     "ErrorResilience": {
         "mode": "pIntra",
-        "parameter": "4"
+        "parameter": "2"
     },
     "Slice": {
         "mode": "fixed",
-        "parameter": "4"
+        "parameter": "8"
     },
     "PreDelay": {
             "mode": "equally",

@@ -251,7 +251,7 @@ class MultiViewEncoder:
                 s.time_stamp_in_micro_s = round(timestamp + slice_delay + self.cfg.get_buffer_delay(buff_idx))
                 s.index = self.slice_idx
                 s.eye_buffer = buff_idx
-                s.frame_file = frame_file
+                s.frame_file = str(self.frames_dir / frame_file)
                 refresh += str(s.type.value)
                 straces.append(s)
                 self.slice_idx += 1
