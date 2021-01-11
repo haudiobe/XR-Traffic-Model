@@ -17,8 +17,8 @@ from .feedback import Referenceable, ReferenceableList
 from .utils import ConfigException, _requires
 
 
-INTRA_VARIANCE = 0.2
-INTER_VARIANCE = 0.1
+INTRA_VARIANCE = 0.1
+INTER_VARIANCE = 0.2
 
 class ErrorResilienceMode(IntEnum):
     DISABLED = 0
@@ -42,9 +42,10 @@ class Delay:
     def __init__(self, **params):
         self.mode = str(params.get("mode", "constant")).lower()
         assert self.mode in [self.CONSTANT, self.EQUALLY, self.GAUSSIANTRUNC]
-        self.parameter1 = int(params.get("parameter1", 0))
-        self.parameter2 = int(params.get("parameter2", 0))
-        self.parameter3 = int(params.get("parameter3", 0))
+        # timestamps are expressed in micro seconds
+        self.parameter1 = int(params.get("parameter1", 0)) * 1e3
+        self.parameter2 = int(params.get("parameter2", 0)) * 1e3
+        self.parameter3 = int(params.get("parameter3", 0)) * 1e3
 
     def get_delay(self):
         if self.mode == self.CONSTANT:
@@ -64,7 +65,8 @@ class EncodingDelay(Delay):
     def get_delay(self, no_slices:float, frame_interval:float):
         if self.mode == self.GAUSSIANTRUNC:
             mean, std = self.parameter1 / no_slices, self.parameter2 / no_slices
-            lower, upper = 0, self.parameter3 / (frame_interval * no_slices)
+            jitter = self.parameter3 / (frame_interval * no_slices)
+            lower, upper = mean - jitter, mean + jitter
             a, b = (lower - mean) / std, (upper - mean) / std
             return stats.truncnorm( a, b, loc=mean, scale=std).rvs()
         else:
@@ -864,24 +866,20 @@ class Frame:
         """
         Iterates through the frame's CU map and set the CU's `reference` and `size` properties. w/ inter_cu_variance = 0.2, intra_cu_variance = 0.1
         """
-        if qp < 0:
-            intra_cu_size = lambda : math.ceil(random.gauss(self.intra_mean, INTRA_VARIANCE) / 8)
-            inter_cu_size = lambda : math.ceil(random.gauss(self.inter_mean, INTER_VARIANCE) / 8)
-        else:
-            qp_adjustment = lambda qp, qp_ref : pow(2, (qp - qp_ref)/6)
-            i_qp_factor = qp_adjustment(qp, self.i_qp)
-            p_qp_factor = qp_adjustment(qp, self.p_qp)
-            intra_cu_size = lambda : math.ceil(random.gauss(self.intra_mean, INTRA_VARIANCE) * i_qp_factor / 8)
-            inter_cu_size = lambda : math.ceil(random.gauss(self.inter_mean, INTER_VARIANCE) * p_qp_factor / 8)
-
-        frame_size = 0
-        i_qp = self.i_qp if qp < 0 else self.i_qp
+        qp_adjustment = lambda qp, qp_ref : pow(2, (qp - qp_ref)/6)
+        
+        i_qp = self.i_qp if qp < 0 else qp
+        i_qp_factor = 1 if qp < 0 else qp_adjustment(qp, self.i_qp)
         i_y_psnr = self.i_y_psnr if qp < 0 else model_pnsr_adjustment(qp, self.i_qp, self.i_y_psnr)
         i_yuv_psnr = self.i_yuv_psnr if qp < 0 else model_pnsr_adjustment(qp, self.i_qp, self.i_yuv_psnr)
-        p_qp = self.p_qp if qp < 0 else self.p_qp
+
+        p_qp = self.p_qp if qp < 0 else qp
+        p_qp_factor = 1 if qp < 0 else qp_adjustment(qp, self.p_qp)
         p_y_psnr = self.p_y_psnr if qp < 0 else model_pnsr_adjustment(qp, self.p_qp, self.p_y_psnr)
         p_yuv_psnr = self.p_yuv_psnr if qp < 0 else model_pnsr_adjustment(qp, self.p_qp, self.p_yuv_psnr)
-        
+
+        frame_size = 0
+
         for s in self.slices:
             rpl = refs.get_rpl(s.slice_idx)
             slice_size = 0
@@ -894,14 +892,14 @@ class Frame:
                     cu.psnr_y = p_y_psnr
                     cu.psnr_yuv = p_yuv_psnr
                     cu.reference = rpl[0]
-                    cu.size = intra_cu_size()
+                    cu.size = math.ceil(random.gauss(self.inter_mean, math.sqrt(self.inter_mean * 0.2)) * p_qp_factor / 8)
                 else:
                     assert cu.mode == CU_mode.INTRA
                     cu.qp = i_qp
                     cu.psnr_y = i_y_psnr
                     cu.psnr_yuv = i_yuv_psnr
                     cu.reference = None
-                    cu.size = inter_cu_size()
+                    cu.size = math.ceil(random.gauss(self.intra_mean, math.sqrt(self.intra_mean * 0.1)) * i_qp_factor / 8)
                 slice_size += cu.size
             s.size = slice_size
             frame_size += slice_size
