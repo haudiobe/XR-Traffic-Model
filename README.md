@@ -35,8 +35,8 @@ The input/output filenames are prefixed automatically with user ids. Currently, 
 (myvenv) python ./xrtm_encoder.py -c ./samples/encoder.cfg.json --user_id 3
 ```
 outputs :
-* `./samples_results/S-Trace[9].csv` S-Trace file for all buffers
-* `./samples_results/S-Trace[9].frames/` directory containing all traces
+* `./samples_results/S-Trace[3].csv` S-Trace file for all buffers
+* `./samples_results/S-Trace[3].frames/` directory containing all traces
 
 
 **Generate P-Trace from S-Trace**
@@ -44,7 +44,7 @@ outputs :
 (myvenv) python ./xrtm_packetizer.py -c ./samples/packetizer.cfg.json --user_id 3
 ```
 outputs :
-* `./samples_results/P-Trace[9].csv` P-Trace file for all buffers
+* `./samples_results/P-Trace[3].csv` P-Trace file for all buffers
 
 
 
