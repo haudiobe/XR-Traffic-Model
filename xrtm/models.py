@@ -892,16 +892,16 @@ class Frame:
                     cu.psnr_y = p_y_psnr
                     cu.psnr_yuv = p_yuv_psnr
                     cu.reference = rpl[0]
-                    cu.size = math.ceil(random.gauss(self.inter_mean, self.inter_mean * 0.2) * p_qp_factor)
+                    cu.size = math.ceil(random.gauss(self.inter_mean, self.inter_mean * 0.2) * p_qp_factor / 8)
                 else:
                     assert cu.mode == CU_mode.INTRA
                     cu.qp = i_qp
                     cu.psnr_y = i_y_psnr
                     cu.psnr_yuv = i_yuv_psnr
                     cu.reference = None
-                    cu.size = math.ceil(random.gauss(self.intra_mean, self.intra_mean * 0.1) * i_qp_factor)
+                    cu.size = math.ceil(random.gauss(self.intra_mean, self.intra_mean * 0.1) * i_qp_factor / 8)
                 slice_size += cu.size
             s.size = slice_size
-            frame_size += slice_size
+            frame_size += slice_size 
         return frame_size
 
