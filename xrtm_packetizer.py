@@ -61,7 +61,7 @@ class PacketizerConfig:
 
 if __name__ == "__main__":
     
-    parser = argparse.ArgumentParser(description='Model encoder configuration')
+    parser = argparse.ArgumentParser(description='XRTM Packetizer')
     parser.add_argument('-c', '--config', type=str, help='packetizer config', required=True)
     parser.add_argument('-u', '--user_id', type=int, help='user id', required=False, default=-1)
     
@@ -75,7 +75,6 @@ if __name__ == "__main__":
 
     with open(cfg.get_ptrace_output(args.user_id), 'w') as f:
         writer = PTraceTx.get_csv_writer(f)
-
         source = cfg.get_strace_source(args.user_id)
         seqnum = 0
         for trace in STraceTx.iter_csv_file(source):

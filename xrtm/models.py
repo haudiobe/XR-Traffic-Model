@@ -76,8 +76,8 @@ class EncoderConfig:
     
     def __init__(self):
         self.rc_mode = RC_mode.VBR
-        self.rc_bitrate = None
-        self.rc_window_size = None
+        self.rc_bitrate = 10000000
+        self.rc_window_size = 1
         self.rc_target_qp = -1
         self.rc_qp_min = -1
         self.rc_qp_max = -1
