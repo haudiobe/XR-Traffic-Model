@@ -9,14 +9,14 @@ from .models import STraceTx, PTraceTx, PTraceRx, STraceRx, XRTM, CSV, CsvRecord
 def pack(i:int, s:STraceTx, mtu=1500, header_size=40) -> Iterable[PTraceTx]:
     seqnum = i
     if mtu <= 0:
-        bytes_to_pack = header_size - s.size
+        bytes_to_pack = header_size + s.size
         yield PTraceTx.from_strace(s, size=bytes_to_pack, number=i, number_in_slice=0, last_in_slice=True)
         return
     fragnum = 0
     max_payload_size = mtu - header_size
     bytes_to_pack = s.size
     while bytes_to_pack > max_payload_size:
-        yield PTraceTx.from_strace(s, size=bytes_to_pack, number=seqnum, number_in_slice=fragnum, last_in_slice=False)
+        yield PTraceTx.from_strace(s, size=max_payload_size, number=seqnum, number_in_slice=fragnum, last_in_slice=False)
         bytes_to_pack -= max_payload_size
         seqnum += 1
         fragnum += 1
