@@ -201,7 +201,7 @@ class VTraceIterator:
 
     @classmethod
     def iter_vtrace(cls, vtraces:List[VTraceTx], start_frame=0, count:int=-1) -> Iterator[VTraceTx]:
-        size = len(vtraces)-1
+        size = len(vtraces)
         start_frame = start_frame % size
         if count < 0:
             count == size
