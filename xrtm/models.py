@@ -1,6 +1,7 @@
 import os
+import shutil
 import csv
-from typing import Any, Iterable, List, Dict, Callable
+from typing import Any, Iterator, List, Dict, Callable
 from enum import Enum, IntEnum
 import json
 import zlib
@@ -8,61 +9,238 @@ import math
 from pathlib import Path
 from collections import OrderedDict
 import random
+import scipy.stats as stats
 
 import logging as logger
 
-from .exceptions import VTraceTxException
-from .feedback import Referenceable
-# from .cu_map import CtuMap
+from .feedback import Referenceable, ReferenceableList
+from .utils import ConfigException, _requires
 
-#################################################################################################################################
+
+INTRA_VARIANCE = 0.2
+INTER_VARIANCE = 0.1
 
 class ErrorResilienceMode(IntEnum):
     DISABLED = 0
-    PERIODIC_FRAME = 1
-    PERIODIC_SLICE = 2
-    FEEDBACK_BASED = 3 # feedback INTRA, BITRATE + NACK
-    FEEDBACK_BASED_ACK = 4 # feedback INTRA, BITRATE + ACK
-
+    PERIODIC_INTRA = 1
+    FEEDBACK_BASED = 2
+    FEEDBACK_BASED_ACK = 3
+    FEEDBACK_BASED_NACK = 4
+    
     @classmethod
     def get(cls, i:int):
         for e in cls.__members__.values():
             if e.value == i:
                 return e
 
+class Delay:
+
+    CONSTANT = "constant"
+    EQUALLY = "equally"
+    GAUSSIANTRUNC = "gaussiantrunc"
+
+    def __init__(self, **params):
+        self.mode = str(params.get("mode", "constant")).lower()
+        assert self.mode in [self.CONSTANT, self.EQUALLY, self.GAUSSIANTRUNC]
+        self.parameter1 = int(params.get("parameter1", 0))
+        self.parameter2 = int(params.get("parameter2", 0))
+        self.parameter3 = int(params.get("parameter3", 0))
+
+    def get_delay(self):
+        if self.mode == self.CONSTANT:
+            return self.parameter1
+        
+        if self.mode == self.EQUALLY:
+            return random.uniform(self.parameter1, self.parameter2)
+
+        if self.mode == self.GAUSSIANTRUNC:
+            lower, upper = 0, self.parameter3
+            mean, std = self.parameter1, self.parameter2
+            a, b = (lower - mean) / std, (upper - mean) / std
+            return stats.truncnorm( a, b, loc=mean, scale=std).rvs()
+
+class EncodingDelay(Delay):
+    
+    def get_delay(self, no_slices:float, frame_interval:float):
+        if self.mode == self.GAUSSIANTRUNC:
+            mean, std = self.parameter1 / no_slices, self.parameter2 / no_slices
+            lower, upper = 0, self.parameter3 / (frame_interval * no_slices)
+            a, b = (lower - mean) / std, (upper - mean) / std
+            return stats.truncnorm( a, b, loc=mean, scale=std).rvs()
+        else:
+            return super().get_delay()
 
 class EncoderConfig:
     
-    def __init__(self, data:dict):
-        self.frame_width = data.get('frame_width', 2048) 
-        self.frame_height = data.get('frame_height', 2048)
-        self.frame_rate = data.get('frame_rate', 60.0)
-        self.slices_per_frame = data.get('slices_per_frame', 8)
-        self.crf = data.get('crf', -1)
-        self.rc_max_bits = data.get('rc_max_bits', -1)
-        self.rc_window = data.get('rc_window', -1) # TODO
-        self.gop_size = data.get('gop_size', -1)
-        self.error_resilience_mode = ErrorResilienceMode.get(data.get('error_resilience_mode', 0))
-        self.start_time = data.get('start_time', 0)
-        self.slice_delay = data.get('slice_delay', 1)
-        self.interleaved = data.get('interleaved', True)
-        self.render_jitter_min = data.get('render_jitter_min', 15)
-        self.render_jitter_max = data.get('render_jitter_max', 25)
-        self.eye_buffer_delay = int(data.get('eye_buffer_delay', 1e+6 / (2 * self.frame_rate)))
+    def __init__(self):
+        self.rc_mode = RC_mode.VBR
+        self.rc_bitrate = None
+        self.rc_window_size = None
+        self.rc_target_qp = -1
+        self.rc_qp_min = -1
+        self.rc_qp_max = -1
+
+        self.error_resilience_mode = ErrorResilienceMode.DISABLED
+        self.intra_refresh_period = -1
+        self.start_time = 0
+        self.total_frames = -1
         
+        self.buffers = []
+        self.frame_width = 2048
+        self.frame_height = 2048
+        self.frame_rate = 60.0
+        self.slices_per_frame = 1
+
+        self.buffer_interleaving = True
+        self._pre_delay = None
+        self._encoding_delay = None
+
         # CU map config
-        self.cu_size = data.get('cu_size', 64)
-        self.cu_per_frame = int(( self.frame_width * self.frame_height ) / self.cu_size**2 )
-        self.cu_per_slice = int(( self.frame_width / self.cu_size ) * self.frame_height / ( self.slices_per_frame * self.cu_size ))
+        self.cu_size = 64
+        
         # slices/CU refs
-        self.max_refs = data.get('max_refs', 16)
-        self.frames_dir = Path('.')
+        self.max_refs = 1
+        self.strace_output = './S-Trace.csv'
+
+    def get_cu_per_frame(self):
+        return int(( self.frame_width * self.frame_height ) / self.cu_size**2 )
+
+    def get_cu_per_slice(self):
+        return int(( self.frame_width / self.cu_size ) * self.frame_height / ( self.slices_per_frame * self.cu_size ))
+
+    def get_frame_duration(self) -> float:
+        return 1e6 / self.frame_rate
+
+    def get_pre_delay(self):
+        if self._pre_delay == None:
+            return 0
+        return self._pre_delay.get_delay()
+
+    def get_encoding_delay(self):
+        if self._encoding_delay == None:
+            return 0
+        return self._encoding_delay.get_delay(self.slices_per_frame, self.get_frame_duration())
+    
+    def get_buffer_delay(self, buff_idx:int):
+        """
+        the buffer delay to apply when buffers are interleaved
+        NOTE:
+            * for len(self.buffers) > 2, it is frame_duration / 2
+            * behavior has not been discussed for len(self.buffers) > 2
+        """
+        return 0 if buff_idx == 0 else self.get_frame_duration() / 2
+
+    def get_frames_dir(self, user_idx=-1, mkdir=False, overwrite=False):
+        p = Path(self.strace_output)
+        if user_idx < 0:
+            p = p.parent / f'{p.stem}.frames/'
+        else:
+            p = p.parent / f'{p.stem}[{str(user_idx)}].frames/'
+        if mkdir:
+            if overwrite and p.exists() and p.is_dir:
+                shutil.rmtree(p)
+            p.mkdir(parents=True, exist_ok=False)
+        return p
+
+    def get_strace_output(self, user_idx=-1):
+        p = Path(self.strace_output)
+        if user_idx < 0:
+            return p
+        else:
+            return p.parent / f'{p.stem}[{str(user_idx)}]{p.suffix}'
 
     @classmethod
-    def load(cls, path):
-        with open(path, 'r') as f:
-            data = json.load(f)
-            return cls(data)
+    def parse_config(cls, data:dict):
+        cfg = cls()
+        ########################################
+        # Rate config
+        rc = data.get("Bitrate", { "mode": "VBR" })
+        if rc["mode"] == "VBR":
+            cfg.rc_mode = RC_mode.VBR
+            cfg.rc_target_qp = int(rc.get("QP", -1))
+        elif rc["mode"] == "cVBR":
+            cfg.rc_mode = RC_mode.cVBR
+            _requires("bitrate", rc, "cVBR requires an explicit bitrate")
+            cfg.rc_bitrate = int(rc["bitrate"]) # bits/s
+            cfg.rc_window_size = int(rc.get("window_size", 1)) # frames
+            cfg.rc_qp_min = int(rc.get("QPmin", -1)) # default: -1
+            cfg.rc_qp_max = int(rc.get("QPmax", -1)) # optional
+        elif rc["mode"] == "CBR":
+            cfg.rc_mode = RC_mode.cVBR
+            _requires("bitrate", rc, "CBR requires an explicit bitrate")
+            cfg.rc_bitrate = int(rc["bitrate"])
+            cfg.rc_window_size = int(rc.get("window_size", 1))
+            cfg.rc_qp_min = int(rc.get("QPmin", -1))
+            cfg.rc_qp_max = int(rc.get("QPmax", -1))
+        elif rc["mode"] == "fVBR":
+            """
+            ◦ fVBR: Feedback-based Variable Bitrate 
+                ▪ Details are tbd
+            """
+            cfg.rc_mode = RC_mode.VBR
+        ########################################
+        # Slice config
+        slicing = data.get("Slice", { "mode": "no" })
+        if slicing["mode"] == "no":
+            cfg.slices_per_frame = 1
+        elif slicing["mode"] == "fixed":
+            cfg.slices_per_frame = int(slicing.get("parameter", 8))
+        elif slicing["mode"] == "max":
+            raise ConfigException("Slice mode 'max' not implemented")
+        ########################################
+        # Error resilience
+        erm = data.get("ErrorResilience", { "mode": "no" })
+        if erm["mode"] == "no":
+            cfg.error_resilience_mode = ErrorResilienceMode.DISABLED
+            cfg.intra_refresh_period = -1
+        elif erm["mode"] == "pIntra":
+            cfg.error_resilience_mode = ErrorResilienceMode.PERIODIC_INTRA
+            _requires("parameter", erm, "missing required parameter for ErrorResilience mode = pIntra")
+            cfg.intra_refresh_period = int(erm["parameter"])
+        elif erm["mode"] in ["fIntra", "ACK", "NACK"]:
+            cfg.error_resilience_mode = ErrorResilienceMode.FEEDBACK_BASED
+            cfg.intra_refresh_period = -1
+            print("feedback mode under development")
+        ########################################
+        # Delay config 
+        pre_default = {
+            "mode": "equally",
+            "parameter1": 10,
+            "parameter2": 30
+        }
+        cfg._pre_delay = Delay(**data.get("PreDelay", pre_default))
+        
+        encoding_default = {
+            "mode": "GaussianTrunc",
+            "parameter1": 8,
+            "parameter2": 3,
+            "parameter3": 1
+        }
+        cfg._encoding_delay = EncodingDelay(**data.get("EncodingDelay", encoding_default))
+        cfg.buffers = data.get("Buffers", [])
+        if len(cfg.buffers) == 0 or len(cfg.buffers) > 2:
+            raise ConfigException("invalid Buffers configuration")
+        ########################################
+        # Buffers/Frames
+        for i, buff in enumerate(cfg.buffers):
+            _requires("V-Trace", buff, f'"V-Trace" not defined on buffer {i}')
+            p = buff["V-Trace"]
+            assert Path(p).exists(), f'V-Trace file not found {p}'
+        cfg.frame_width = data.get("frame_width", 2048)
+        cfg.frame_height = data.get("frame_height", 2048)
+        cfg.start_frame = data.get("start_frame", 0)
+        cfg.total_frames = data.get("total_frames", -1)
+        cfg.buffer_interleaving = data.get("buffer_interleaving", False)
+        cfg.cu_size = data.get("cu_size", 64)
+        _requires("S-Trace", data, f'"S-Trace" output path definition missing')
+        cfg.strace_output = data["S-Trace"]
+        return cfg
+
+    @classmethod
+    def load(cls, p:Path) -> 'EncoderConfig':
+        with open(p, 'r') as f:
+            cfg = json.load(f)
+            return cls.parse_config(cfg)
 
 
 #################################################################################################################################
@@ -191,47 +369,48 @@ class XRTM(Enum):
     
     # VTraceTx
     VIEW_IDX = CSV("view_idx", int, None, -1) # 0: LEFT, 1: RIGHT
-    PTS = CSV("pts", int)
     ENCODE_ORDER = CSV("encode_order", int)
-    CRF_REF = CSV("crf_ref", float)
-    QP_REF = CSV("qp_ref", float)
-    TYPE = CSV("type", SliceType.parse, SliceType.serialize)
+    I_QP = CSV("i_qp", int )
+    I_BITS = CSV("i_bits", int)
+    I_TOTAL_FRAME_TIME_MS = CSV("i_total_frame_time_ms", int)
+    I_PSNR_Y = CSV("i_y_psnr", float)
+    I_PSNR_U = CSV("i_u_psnr", float)
+    I_PSNR_V = CSV("i_v_psnr", float)
+    I_PSNR_YUV = CSV("i_yuv_psnr", float)
+    I_SSIM = CSV("i_ssim", float)
+    I_SSIM_DB = CSV("i_ssim_db", float)
+    P_SSIM = CSV("i_ssim", float)
+    P_SSIM_DB = CSV("i_ssim_db", float)
 
-    INTRA_QP_REF = CSV("intra_qp_ref", int )
-    INTRA_TOTAL_BITS = CSV("intra_total_bits", int)
-    INTRA_TOTAL_TIME = CSV("intra_total_time", int)
-    INTRA_PSNR_Y = CSV("intra_y_psnr", float)
-    INTRA_PSNR_U = CSV("intra_u_psnr", float)
-    INTRA_PSNR_V = CSV("intra_v_psnr", float)
-    INTRA_PSNR_YUV = CSV("intra_yuv_psnr", float)
-
-    INTER_QP_REF = CSV("inter_qp_ref", float)
-    INTER_TOTAL_BITS = CSV("inter_total_bits", int)
-    INTER_TOTAL_TIME = CSV("inter_total_time", int)
-    INTER_PSNR_Y = CSV("inter_y_psnr", float)
-    INTER_PSNR_U = CSV("inter_u_psnr", float)
-    INTER_PSNR_V = CSV("inter_v_psnr", float)
-    INTER_PSNR_YUV = CSV("inter_yuv_psnr", float)
+    P_QP = CSV("p_qp", float)
+    P_BITS = CSV("p_bits", int)
+    P_TOTAL_FRAME_TIME_MS = CSV("p_total_frame_time_ms", int)
+    P_PSNR_Y = CSV("p_y_psnr", float)
+    P_PSNR_U = CSV("p_u_psnr", float)
+    P_PSNR_V = CSV("p_v_psnr", float)
+    P_PSNR_YUV = CSV("p_yuv_psnr", float)
 
     PSNR_Y = CSV("y_psnr", float)
     PSNR_U = CSV("u_psnr", float)
     PSNR_V = CSV("v_psnr", float)
     PSNR_YUV = CSV("yuv_psnr", float)
 
-    CU_INTRA = CSV("ctu_intra_pct", float)
-    CU_INTER = CSV("ctu_inter_pct", float)
-    CU_SKIP = CSV("ctu_skip_pct", float)
-    CU_MERGE = CSV("ctu_merge_pct", float)
+    INTRA = CSV("intra", float)
+    INTER = CSV("inter", float)
+    SKIP = CSV("skip", float)
+    MERGE = CSV("merge", float)
 
     # PTraceTx
     NUMBER = CSV("number", int, None)
     NUMBER_IN_SLICE = CSV("number_in_slice", int, None)
-    LAST_IN_SLICE = CSV("last_in_slice", bool, int)
+    LAST_IN_SLICE = CSV("last_in_slice", bool, lambda b: 1 if b else 0)
     DELAY = CSV("delay", int, None)
     S_TRACE = CSV("s_trace", )
 
     # STraceTx
+    FRAME_IDX = CSV("frame_idx", int, None)
     SLICE_IDX = CSV("slice_idx", int)
+    TYPE = CSV("type", SliceType.parse, SliceType.serialize)
     INTRA_MEAN = CSV("intra_mean", float)
     INTER_MEAN = CSV("inter_mean", float)
     IMPORTANCE = CSV("importance", int, None, -1)
@@ -263,10 +442,10 @@ class CU(CsvRecord):
         CSV("address", int), # Address of CU in frame.
         CSV("mode", CU_mode.parse, CU_mode.serialize, None), # The mode of the CU 1=intra, 2=merge, 3=skip, 4=inter
         CSV("size", int), # Slice size in bytes.
-        CSV("reference", int) # The reference frame of the CU 0 n/a, 1=previous, 2=2 in past, etc.
-        # CSV("qp", int) # the QP decided for the CU
-        # CSV("psnr_y", int) # the estimated Y-PSNR for the CU in db multiplied by 1000
-        # CSV("psnr_yuv", int) # the estimated weighted YUV-PSNR for the CU db multiplied by 1000
+        CSV("reference", int), # The reference frame of the CU 0 n/a, 1=previous, 2=2 in past, etc.
+        CSV("qp", int), # the QP decided for the CU
+        CSV("psnr_y", int), # the estimated Y-PSNR for the CU in db multiplied by 1000
+        CSV("psnr_yuv", int) # the estimated weighted YUV-PSNR for the CU db multiplied by 1000
     ]
 
     def __init__(self, mode=CU_mode.UNDEFINED, size=-1, ref:List[int]=[], address=-1):
@@ -282,6 +461,21 @@ class CuMap:
     def __init__(self, count:int):
         self.count = count
         self._map:List[CU] = [None] * count
+
+    def count(self) -> List[int]:
+        intra, inter, merge, skip = [0] * 4
+        for cu in self._map:
+            if CU_mode.INTRA:
+                intra += 1
+            elif CU_mode.INTER:
+                inter += 1
+            elif CU_mode.MERGE:
+                merge += 1
+            elif CU_mode.SKIP:
+                skip += 1
+            else:
+                raise ValueError('invalid CU type')
+        return intra, inter, merge, skip
 
     @classmethod
     def draw_ctus(cls, count:int, weights:List[float]) -> List[CU]:
@@ -326,31 +520,29 @@ class CuMap:
 class VTraceTx(CsvRecord):
 
     attributes = [
-            # XRTM.VIEW_IDX
-            XRTM.PTS,
+            XRTM.TIME_STAMP_IN_MICRO_S,
             XRTM.ENCODE_ORDER,
-            XRTM.CRF_REF,
 
-            XRTM.INTRA_QP_REF,
-            XRTM.INTRA_TOTAL_BITS,
-            XRTM.INTRA_TOTAL_TIME,
-            XRTM.INTRA_PSNR_Y,
-            XRTM.INTRA_PSNR_U,
-            XRTM.INTRA_PSNR_V,
-            XRTM.INTRA_PSNR_YUV,
+            XRTM.I_QP,
+            XRTM.I_BITS,
+            XRTM.I_TOTAL_FRAME_TIME_MS,
+            XRTM.I_PSNR_Y,
+            XRTM.I_PSNR_U,
+            XRTM.I_PSNR_V,
+            XRTM.I_PSNR_YUV,
 
-            XRTM.INTER_QP_REF,
-            XRTM.INTER_TOTAL_BITS,
-            XRTM.INTER_TOTAL_TIME,
-            XRTM.INTER_PSNR_Y,
-            XRTM.INTER_PSNR_U,
-            XRTM.INTER_PSNR_V,
-            XRTM.INTER_PSNR_YUV,
+            XRTM.P_QP,
+            XRTM.P_BITS,
+            XRTM.P_TOTAL_FRAME_TIME_MS,
+            XRTM.P_PSNR_Y,
+            XRTM.P_PSNR_U,
+            XRTM.P_PSNR_V,
+            XRTM.P_PSNR_YUV,
 
-            XRTM.CU_INTRA,
-            XRTM.CU_INTER,
-            XRTM.CU_SKIP,
-            XRTM.CU_MERGE
+            XRTM.INTRA,
+            XRTM.INTER,
+            XRTM.SKIP,
+            XRTM.MERGE
     ]
 
     def __init__(self, data=None):
@@ -359,79 +551,83 @@ class VTraceTx(CsvRecord):
         
         # TODO: clarify expected data range 
         for k in [
-            XRTM.INTRA_QP_REF,
-            XRTM.INTER_QP_REF,
-            XRTM.CU_INTRA,
-            XRTM.CU_INTER,
-            XRTM.CU_SKIP,
-            XRTM.CU_MERGE
+            XRTM.I_QP,
+            XRTM.P_QP,
+            XRTM.INTRA,
+            XRTM.INTER,
+            XRTM.SKIP,
+            XRTM.MERGE
         ]:
             v = getattr(self, k.name) / 100
             setattr(self, k.name, v)
 
         # TODO: clarify expected data range 
         for k in [
-            XRTM.INTRA_PSNR_Y,
-            XRTM.INTRA_PSNR_U,
-            XRTM.INTRA_PSNR_V,
-            XRTM.INTRA_PSNR_YUV,
-            XRTM.INTER_PSNR_Y,
-            XRTM.INTER_PSNR_U,
-            XRTM.INTER_PSNR_V,
-            XRTM.INTER_PSNR_YUV
+            XRTM.I_PSNR_Y,
+            XRTM.I_PSNR_U,
+            XRTM.I_PSNR_V,
+            XRTM.I_PSNR_YUV,
+            XRTM.P_PSNR_Y,
+            XRTM.P_PSNR_U,
+            XRTM.P_PSNR_V,
+            XRTM.P_PSNR_YUV
         ]:
             v = getattr(self, k.name) / 1000
             setattr(self, k.name, v)
 
     def get_intra_mean(self, cu_count):
-       return self.intra_total_bits / cu_count
+       return self.i_bits / cu_count
     
     def get_inter_mean(self, cu_count):
-        if self.ctu_intra_pct == 1.:
+        if self.intra == 1.:
             return 0.
-        intra_mean = self.intra_total_bits / cu_count
-        inter_bits = self.inter_total_bits - (self.ctu_intra_pct * intra_mean) - (self.ctu_skip_pct * 8)
-        inter_ctu_count = cu_count * (1 - self.ctu_intra_pct - self.ctu_skip_pct)
+        intra_mean = self.i_bits / cu_count
+        inter_bits = self.p_bits - (self.intra * intra_mean) - (self.skip * 8)
+        inter_ctu_count = cu_count * (1 - self.intra - self.skip)
         return inter_bits / inter_ctu_count
 
     def get_psnr_ref(self, slice_type:SliceType) -> dict:
         if slice_type == SliceType.IDR:
             return {
-                XRTM.PSNR_Y.name: self.intra_y_psnr,
-                XRTM.PSNR_U.name: self.intra_u_psnr,
-                XRTM.PSNR_V.name: self.intra_v_psnr,
-                XRTM.PSNR_YUV.name: self.intra_yuv_psnr
+                XRTM.PSNR_Y.name: self.i_y_psnr,
+                XRTM.PSNR_U.name: self.i_u_psnr,
+                XRTM.PSNR_V.name: self.i_v_psnr,
+                XRTM.PSNR_YUV.name: self.i_yuv_psnr
             }
         elif slice_type == SliceType.P:
             return {
-                XRTM.PSNR_Y.name: self.inter_y_psnr,
-                XRTM.PSNR_U.name: self.inter_u_psnr,
-                XRTM.PSNR_V.name: self.inter_v_psnr,
-                XRTM.PSNR_YUV.name: self.inter_yuv_psnr
+                XRTM.PSNR_Y.name: self.p_y_psnr,
+                XRTM.PSNR_U.name: self.p_u_psnr,
+                XRTM.PSNR_V.name: self.p_v_psnr,
+                XRTM.PSNR_YUV.name: self.p_yuv_psnr
             }
         raise ValueError('invalid argument: slice_type')
 
     def get_encoding_time(self, slice_type:SliceType):
         if slice_type == SliceType.IDR:
-            return self.intra_total_time
+            return self.i_total_frame_time_ms
         elif slice_type == SliceType.P:
-            return self.inter_total_time
+            return self.p_total_frame_time_ms
         raise ValueError('invalid argument: slice_type')
-    
-    def get_qp_ref(self, slice_type:SliceType):
-        if slice_type == SliceType.IDR:
-            return self.intra_qp_ref
-        elif slice_type == SliceType.P:
-            return self.inter_qp_ref
-        raise ValueError('invalid argument: slice_type')
-    
+        
 
     def get_cu_distribution(self):
-        return self.ctu_intra_pct, self.ctu_inter_pct, self.ctu_skip_pct, self.ctu_merge_pct
+        return self.intra, self.inter, self.skip, self.merge
 
     @property
     def is_full_intra(self):
-        return self.ctu_intra_pct == 1.
+        return self.intra == 1.
+
+def validates_cu_distribution(vt:VTraceTx, raise_exception=True) -> bool:
+    total = vt.intra + vt.inter + vt.skip + vt.merge
+    valid = round(total * 100) == 100
+    if not valid:
+        e_msg = f'Invalid CU distribution on frame {vt.encode_order} - sum of all CUs is {total}%'
+        if raise_exception:
+            raise ValueError(e_msg)
+        logger.critical(e_msg)
+    return valid
+
 
 class VTraceRx(VTraceTx):
     """
@@ -453,20 +649,15 @@ class STraceTx(CsvRecord):
         XRTM.NUMBER_CUS,
         XRTM.EYE_BUFFER,
         XRTM.FRAME_FILE,
-        # TODO: move these to CU properties ?
-        # XRTM.REFERENCE,
-        # XRTM.QP,
-        # XRTM.PSNR_Y,
-        # XRTM.PSNR_U,
-        # XRTM.PSNR_V,
-        # XRTM.PSNR_YUV,
+        XRTM.FRAME_IDX
     ]
 
     @classmethod
     def from_slice(cls, s:'Slice') -> 'STraceTx':
         st = cls({})
         st.time_stamp_in_micro_s = s.time_stamp_in_micro_s
-        st.index = s.slice_idx
+        st.frame_idx = s.frame_idx
+        st.index = -1
         st.size = s.size
         st.eye_buffer = s.view_idx
         st.render_timing = s.render_timing
@@ -474,8 +665,8 @@ class STraceTx(CsvRecord):
         st.importance = s.importance
         st.start_address_cu = s.cu_address
         st.number_cus = s.cu_count
-        st.frame_file = s.frame_file
         st.eye_buffer = s.view_idx
+        st.frame_file = None
         return st
 
 class STraceRx(STraceTx):
@@ -499,8 +690,6 @@ class PTraceTx(CsvRecord):
             XRTM.RENDER_TIMING,
             XRTM.S_TRACE
     ]
-
-    HEADER_SIZE = 40
     
     def is_fragment(self) ->  bool:
         return not (self.number_in_slice == 0 and self.last_in_slice)
@@ -511,8 +700,8 @@ class PTraceTx(CsvRecord):
         p.importance = s.importance
         p.render_timing = s.render_timing
         p.eye_buffer = s.eye_buffer
-        p.type = s.slice_type
-        p.time_stamp_in_micro_s = s.time_stamp_in_micro_s + p.delay
+        p.type = s.type
+        p.time_stamp_in_micro_s = s.time_stamp_in_micro_s
         return p
 
 
@@ -525,52 +714,37 @@ class PTraceRx(PTraceTx):
 
 #################################################################################################################################
 
+class RC_mode(Enum):
+    VBR = 0
+    cVBR = 1
+    CBR = 2
+    fVBR = 3
+
 class RateControl:
 
-    def __init__(self, rc_max_bits=-1, crf=-1):
-        # from config
-        self.max_bits = -1
-        self.target_crf = crf
-        # to be set on update
-        self._crf_ref = -1
-        self._i_qp_ref = -1
-        self._p_qp_ref = -1
+    def __init__(self, cfg:EncoderConfig):
+        self.mode = cfg.rc_mode
+        
+        # for now, assuming bitrate is split equally between all buffers 
+        self.bitrate = cfg.rc_bitrate
+        self.frame_rate = cfg.frame_rate
+        self.window_duration = cfg.rc_window_size * cfg.get_frame_duration()
+        self._buffer_count = len(cfg.buffers)
+        self._target_buffer_bitrate = self.bitrate / self._buffer_count
+        self._window = []
 
-    def update(self, vtrace:VTraceTx):
-        #TODO: maintain bitrate over configurable window
-        self._i_qp_ref = vtrace.intra_qp_ref
-        self._p_qp_ref = vtrace.inter_qp_ref
-        self._crf_ref = vtrate.crf_ref
+        self.target_qp = cfg.rc_target_qp
+        self.qp_min = cfg.rc_qp_min
+        self.qp_max = cfg.rc_qp_max
+    
+    def get_frame_budget(self) -> int:
+        return self.bitrate / self.frame_rate
+    
 
-    def adjust(self, size:int, intra:bool):
-        qp = self._i_qp_ref if intra else self._p_qp_ref
-        if self.max_bits > 0:
-            crf_new = self.target_crf if self.target_crf > 0 else self._crf_ref
-            bits_new = size
-            while bits_new > self.max_bits:
-                crf_new += 1
-                bits_new, qp_new = model_crf_adjustment(size, crf_new, self._crf_ref, qp)
-                if crf_new == 51: 
-                    break
-            return bits_new, qp_new 
-
-        elif self.target_crf > 0:
-            return model_crf_adjustment(size, self.target_crf, self._crf_ref, qp)
-            
-        else:
-            return size, qp
-
-def model_crf_adjustment(bits, CRF, CRFref, qp):
-    y = CRFref - CRF
-    final_bits = bits * pow(2, y/6)
-    QPnew = qp - y
-    return final_bits, QPnew
 
 def model_pnsr_adjustment(qp_new, qp_ref, psnr):
     qp_delta = qp_new - qp_ref
     return psnr + qp_delta
-
-
 
 class Slice(Referenceable):
     
@@ -599,10 +773,6 @@ class Slice(Referenceable):
         self.v_psnr = -1
         self.yuv_psnr = -1
 
-    @property
-    def frame_file(self):
-        return self._frame.frame_file
-
     def get_referenceable_status(self):
         return self._referenceable
 
@@ -611,6 +781,43 @@ class Slice(Referenceable):
     
     referenceable = property(get_referenceable_status, set_referenceable_status)
 
+class RefPicList(ReferenceableList):
+    
+    def __init__(self, max_size:int=16):
+        self.max_size = max_size
+        self.frames = []
+
+    def is_empty(self) -> bool:
+        return len(self.frames) == 0
+
+    def push(self, pic:'Frame'):
+        self.frames.append(pic)
+        self.frames = self.frames[-self.max_size:]
+
+    def get_rpl(self, slice_idx:int) -> List[int]:
+        return [*self.iter(slice_idx)]
+
+    def find_intra(self, slice_idx:int) -> int:
+        for frame in reversed(self.frames):
+            if frame.slices[slice_idx].slice_type == SliceType.IDR:
+                return frame.frame_idx
+        return None
+
+    def iter(self, slice_idx:int) -> Iterator[int]:
+        for frame in reversed(self.frames):
+            if frame.slices[slice_idx].referenceable:
+                yield frame.frame_idx
+            if frame.slices[slice_idx].slice_type == SliceType.IDR:
+                return
+
+    def set_referenceable_status(self, frame_idx:int, slice_idx:int, status:bool):
+        for frame in reversed(self.frames):
+            if frame.frame_idx == frame_idx:
+                frame.slices[slice_idx].referenceable = status
+                return
+
+    def reset(self, slice_idx:int=None):
+        self.frames = []
 
 class Frame:
 
@@ -620,28 +827,30 @@ class Frame:
             view_idx=0
         ):
         self.view_idx = view_idx
-        self.frame_idx = vtrace.encode_order
-        
-        self.intra_mean = vtrace.get_intra_mean(cfg.cu_per_frame)
-        self.inter_mean = vtrace.get_inter_mean(cfg.cu_per_frame)
-        
         self.slices_per_frame = cfg.slices_per_frame
-        self.cu_per_slice = cfg.cu_per_slice
-        self.cu_count = cfg.cu_per_frame
+        self.cu_per_slice = cfg.get_cu_per_slice()
+        self.cu_count = cfg.get_cu_per_frame()
         self.cu_size = cfg.cu_size
-        self.cu_distribution = vtrace.get_cu_distribution()
 
+        self.frame_idx = vtrace.encode_order
+        self.intra_mean = vtrace.get_intra_mean(self.cu_count)
+        self.inter_mean = vtrace.get_inter_mean(self.cu_count)
+        self.i_qp = vtrace.i_qp
+        self.i_y_psnr = vtrace.i_y_psnr
+        self.i_yuv_psnr = vtrace.i_yuv_psnr
+        
+        self.p_qp = vtrace.p_qp
+        self.p_y_psnr = vtrace.p_y_psnr
+        self.p_yuv_psnr = vtrace.p_yuv_psnr
+
+        self.cu_distribution = vtrace.get_cu_distribution()
         self.cu_map = CuMap(self.cu_count)
         self.slices = [Slice(self, slice_idx) for slice_idx in range(self.slices_per_frame)]
     
-    @property
-    def frame_file(self):
-        return f'{self.frame_idx}_{self.view_idx}.csv'
-
     def draw(self, address:int=0, count:int=-1, intra_refresh=False):
         """
-        Draw into the frame's CU map
-        follows vtrace's distribution if intra_refresh = False (default)
+        Draw into the frame's CU map, uses the existing CTU distribution unless `intra_refresh=True`
+        :param intra_refresh:  
         """
         if count == -1:
             count = self.cu_count
@@ -651,23 +860,50 @@ class Frame:
             cu_list = CuMap.draw_ctus(count, self.cu_distribution)
         self.cu_map.update_slice(address, cu_list)
 
-    def encode(self, address:int=0, count:int=-1, rpl:List[int]=[]):
+    def encode(self, qp:int, refs:RefPicList):
         """
         Iterates through the frame's CU map and set the CU's `reference` and `size` properties. w/ inter_cu_variance = 0.2, intra_cu_variance = 0.1
-        Returns:
-            size (int) in bytes
         """
-        size = 0
-        for cu in self.cu_map.get_slice(address, count):
-            if cu.mode == CU_mode.SKIP:
-                cu.reference = rpl[0]
-                cu.size = 1
-            elif cu.mode != CU_mode.INTRA and len(rpl) > 0:
-                cu.reference = rpl[0]
-                cu.size = math.ceil(random.gauss(self.inter_mean, 0.2)/8)
-            else:
-                assert cu.mode == CU_mode.INTRA
-                cu.reference = None
-                cu.size = math.ceil(random.gauss(self.intra_mean, 0.1)/8)
-            size += cu.size
-        return size
+        if qp < 0:
+            intra_cu_size = lambda : math.ceil(random.gauss(self.intra_mean, INTRA_VARIANCE) / 8)
+            inter_cu_size = lambda : math.ceil(random.gauss(self.inter_mean, INTER_VARIANCE) / 8)
+        else:
+            qp_adjustment = lambda qp, qp_ref : pow(2, (qp - qp_ref)/6)
+            i_qp_factor = qp_adjustment(qp, self.i_qp)
+            p_qp_factor = qp_adjustment(qp, self.p_qp)
+            intra_cu_size = lambda : math.ceil(random.gauss(self.intra_mean, INTRA_VARIANCE) * i_qp_factor / 8)
+            inter_cu_size = lambda : math.ceil(random.gauss(self.inter_mean, INTER_VARIANCE) * p_qp_factor / 8)
+
+        frame_size = 0
+        i_qp = self.i_qp if qp < 0 else self.i_qp
+        i_y_psnr = self.i_y_psnr if qp < 0 else model_pnsr_adjustment(qp, self.i_qp, self.i_y_psnr)
+        i_yuv_psnr = self.i_yuv_psnr if qp < 0 else model_pnsr_adjustment(qp, self.i_qp, self.i_yuv_psnr)
+        p_qp = self.p_qp if qp < 0 else self.p_qp
+        p_y_psnr = self.p_y_psnr if qp < 0 else model_pnsr_adjustment(qp, self.p_qp, self.p_y_psnr)
+        p_yuv_psnr = self.p_yuv_psnr if qp < 0 else model_pnsr_adjustment(qp, self.p_qp, self.p_yuv_psnr)
+        
+        for s in self.slices:
+            rpl = refs.get_rpl(s.slice_idx)
+            slice_size = 0
+            for cu in self.cu_map.get_slice(s.cu_address, s.cu_count):
+                if cu.mode == CU_mode.SKIP:
+                    cu.reference = rpl[0]
+                    cu.size = 1
+                elif cu.mode != CU_mode.INTRA:
+                    cu.qp = p_qp
+                    cu.psnr_y = p_y_psnr
+                    cu.psnr_yuv = p_yuv_psnr
+                    cu.reference = rpl[0]
+                    cu.size = intra_cu_size()
+                else:
+                    assert cu.mode == CU_mode.INTRA
+                    cu.qp = i_qp
+                    cu.psnr_y = i_y_psnr
+                    cu.psnr_yuv = i_yuv_psnr
+                    cu.reference = None
+                    cu.size = inter_cu_size()
+                slice_size += cu.size
+            s.size = slice_size
+            frame_size += slice_size
+        return frame_size
+
