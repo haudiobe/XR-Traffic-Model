@@ -6,9 +6,9 @@ from typing import Tuple, List
 
 class FeedbackType(IntEnum):
     UNKNOWN = 0
-    INTRA_REFRESH = 1 # https://tools.ietf.org/html/rfc4585#section-6.3.1
-    SLICE_NACK = 2 # https://tools.ietf.org/html/rfc4585#section-6.3.2
-    SLICE_ACK = 3 # https://tools.ietf.org/html/rfc4585#section-6.3.3
+    INTRA_REFRESH = 1
+    SLICE_NACK = 2
+    SLICE_ACK = 3
 
 class AbstractFeedback(ABC):
 
@@ -32,10 +32,11 @@ class AbstractFeedback(ABC):
     def max_bits(self) -> int:
         raise NotImplementedError()
 
-class Feedback(AbstractFeedback):
+
+class Feedback:
 
     def __init__(self, fb_type:FeedbackType, frame_idx:int, slice_idx:int, max_bits:int=-1):
-        self._frame_idx = frame_idx    
+        self._frame_idx = frame_idx
         self._slice_idx = slice_idx
         self._type = fb_type
         self._max_bits = max_bits
@@ -85,63 +86,3 @@ class ReferenceableList(ABC):
     @abstractmethod
     def set_referenceable_status(self, frame_idx:int, slice_idx:int, status:bool):
         raise NotImplementedError()
-
-
-class FeedbackProvider(ABC):
-
-    @abstractmethod
-    def handle_feedback(self, fb:Feedback):
-        raise NotImplementedError()
-    
-    @abstractmethod
-    def intra_refresh_status(self) -> bool:
-        raise NotImplementedError()
-
-    @abstractmethod
-    def clear_intra_refresh_status(self):
-        raise NotImplementedError()
-
-    @property
-    @abstractmethod
-    def rc_max_bits(self) -> int:
-        raise NotImplementedError()
-    
-    @abstractmethod
-    def update_rpl(self, rpl:ReferenceableList):
-        """
-        uses feedback to update referenceable status of all slices in list
-        """
-        raise NotImplementedError()
-
-class RandomFeedbackGenerator(FeedbackProvider):
-    
-    def __init__(self, full_intra_ratio:float, referenceable_ratio:float, referenceable_default:bool):
-        self.full_intra_ratio = int(full_intra_ratio * 100)
-        self.referenceable_ratio = int(referenceable_ratio * 100)
-        self.referenceable_default = referenceable_default
-
-    def handle_feedback(self, payload:Feedback):
-        raise NotImplementedError()
-    
-    @property
-    def rc_max_bits(self) -> int:
-        return -1
-
-    def intra_refresh_status(self) -> bool:
-        return random.randint(0, 100) < self.full_intra_ratio
-
-    def clear_intra_refresh_status(self):
-        pass
-    
-    def update_rpl(self, rpl:ReferenceableList):
-        for rp in rpl.pics:
-            for s in rp.slices:
-                if s.referenceable == self.referenceable_default and random.randint(0, 100) < self.referenceable_ratio:
-                    s.referenceable = not self.referenceable_default
-
-
-class RandomStereoFeedback:
-    def __init__(self, full_intra_ratio:float, referenceable_ratio:float, referenceable_default:bool):
-        self.enc0 = RandomFeedbackGenerator(full_intra_ratio, referenceable_ratio, referenceable_default)
-        self.enc1 = RandomFeedbackGenerator(full_intra_ratio, referenceable_ratio, referenceable_default)
-

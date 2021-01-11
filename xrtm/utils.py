@@ -52,8 +52,8 @@ def plot(vtraces:List[VTraceTx], straces:List[STraceTx], nslices=1):
         return [t.__dict__[key] for t in traces]
         
     vtx = filter(vtraces, XRTM.FRAME_IDX)
-    vtIbits = filter(vtraces, 'intra_total_bits')
-    vtPbits = filter(vtraces, 'inter_total_bits')
+    vtIbits = filter(vtraces, 'i_bits')
+    vtPbits = filter(vtraces, 'p_bits')
 
     stx = filter(straces, XRTM.FRAME_IDX)
     sty = filter(straces, XRTM.BITS_NEW.name)
