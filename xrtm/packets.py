@@ -6,19 +6,22 @@ from pathlib import Path
 
 from .models import STraceTx, PTraceTx, PTraceRx, STraceRx, XRTM, CSV, CsvRecord
 
-def pack(i:int, s:STraceTx, mtu=1500, header_size=PTraceTx.HEADER_SIZE) -> Iterable[PTraceTx]:
+def pack(i:int, s:STraceTx, mtu=1500, header_size=40) -> Iterable[PTraceTx]:
     seqnum = i
+    if mtu <= 0:
+        bytes_to_pack = header_size - s.size
+        yield PTraceTx.from_strace(s, size=bytes_to_pack, number=i, number_in_slice=0, last_in_slice=True)
+        return
     fragnum = 0
     max_payload_size = mtu - header_size
     bytes_to_pack = s.size
     while bytes_to_pack > max_payload_size:
-        yield PTraceTx.from_strace(s, size=bytes_to_pack, number=seqnum, number_in_slice=fragnum, is_last=False)
+        yield PTraceTx.from_strace(s, size=bytes_to_pack, number=seqnum, number_in_slice=fragnum, last_in_slice=False)
         bytes_to_pack -= max_payload_size
         seqnum += 1
         fragnum += 1
-    yield PTraceTx.from_strace(s, size=bytes_to_pack, number=seqnum, number_in_slice=fragnum, is_last=True)
+    yield PTraceTx.from_strace(s, size=bytes_to_pack, number=seqnum, number_in_slice=fragnum, last_in_slice=True)
 
-# TODO: should receive PTraceRx
 def unpack(*packets:List[PTraceTx]) -> int:
     """
     asserts a list of packets can be decoded into a slice
@@ -39,35 +42,24 @@ def unpack(*packets:List[PTraceTx]) -> int:
 
 class Packetizer:
 
-    def __init__(self, *args, **kwargs):
-        # TODO: read this from config file
-        self.constant_delay = kwargs.get('constant_delay', 5)
-        self._jitter_min = kwargs.get('jitter_min', 0)
-        self._jitter_max = kwargs.get('jitter_max', 5)
-        self.user_id = kwargs.get('user_id', 0)
-        # print('\n\t> Jitter model - const:', self.constant_delay, '- jitter: ', self._jitter_min, '~', self._jitter_max )
-
-    def jitter(self):
-        return self.constant_delay + randint(self._jitter_min, self._jitter_max)
+    def __init__(self, cfg, user_idx=-1):
+        self.cfg = cfg
+        self.user_id = max(user_idx, 0)
 
     def process(self, slices:Iterable[STraceTx], seqnum = 0) -> Iterable[PTraceTx]:
-        seqnum = 0
-        p_per_slice = []
+        seqnum = seqnum
         for s in slices:
             p_in_slice = 0
-            for p in pack(seqnum, s):
+            for p in pack(seqnum, s, mtu=self.cfg.pckt_max_size, header_size=self.cfg.pckt_overhead):
                 seqnum += 1
-                p_in_slice += 1
                 p.user_id = self.user_id
-                p.delay = self.jitter()
+                p.delay = 0
                 p.index = s.index
                 p.render_timing = s.render_timing
                 p.type = s.type
                 p.eye_buffer = s.eye_buffer
                 p.s_trace = None
                 yield p
-            p_per_slice.append(p_in_slice)
-        # print('\t> Fragments per slice - avg:', sum(p_per_slice) / len(p_per_slice), '- min:', min(*p_per_slice), '- max:', max(*p_per_slice) )
 
 
 class JitterBuffer:
