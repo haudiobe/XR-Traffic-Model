@@ -7,18 +7,9 @@ import argparse
 from pathlib import Path
 import re
 
-from xrtm.utils import (
-    read_csv_vtraces,
-    plot
-)
-
 from xrtm.models import (
     VTraceTx,
     STraceTx
-)
-
-from xrtm.exceptions import (
-    EncoderConfigException
 )
 
 from xrtm.encoder import (
@@ -34,7 +25,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='STrace encoder configuration')
     parser.add_argument('-c', '--config', help='encoder config', type=str, required=True)
-    parser.add_argument('-u', '--user_id', help='an id to keep track of this user', type=int, required=False, default=-1)
+    parser.add_argument('-u', '--user_id', help='user id', type=int, required=False, default=-1)
     parser.add_argument('-l', '--log_level', type=int, default=0, help='default=0 - set log level. 0:CRITICAL, 1:INFO, 2:DEBUG', required=False)
     args = parser.parse_args()
 

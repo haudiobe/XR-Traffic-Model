@@ -13,24 +13,12 @@ import scipy.stats as stats
 
 import logging as logger
 
-from .exceptions import VTraceTxException
 from .feedback import Referenceable, ReferenceableList
+from .utils import ConfigException, _requires
 
-#################################################################################################################################
 
 INTRA_VARIANCE = 0.2
 INTER_VARIANCE = 0.1
-
-
-class ConfigException(Exception):
-    pass
-
-def _required(key, cfg, msg):
-    if key not in cfg:
-        raise ConfigException( msg )
-
-#################################################################################################################################
-
 
 class ErrorResilienceMode(IntEnum):
     DISABLED = 0
@@ -81,7 +69,6 @@ class EncodingDelay(Delay):
             return stats.truncnorm( a, b, loc=mean, scale=std).rvs()
         else:
             return super().get_delay()
-    
 
 class EncoderConfig:
     
@@ -156,10 +143,10 @@ class EncoderConfig:
         return p
 
     def get_strace_output(self, user_idx=-1):
+        p = Path(self.strace_output)
         if user_idx < 0:
-            return Path(self.strace_output)
+            return p
         else:
-            p = Path(self.strace_output)
             return p.parent / f'{p.stem}__{user_idx}' + p.suffix
 
     @classmethod
@@ -173,14 +160,14 @@ class EncoderConfig:
             cfg.rc_target_qp = int(rc.get("QP", -1))
         elif rc["mode"] == "cVBR":
             cfg.rc_mode = RC_mode.cVBR
-            _required("bitrate", rc, "cVBR requires an explicit bitrate")
+            _requires("bitrate", rc, "cVBR requires an explicit bitrate")
             cfg.rc_bitrate = int(rc["bitrate"]) # bits/s
             cfg.rc_window_size = int(rc.get("window_size", 1)) # frames
             cfg.rc_qp_min = int(rc.get("QPmin", -1)) # default: -1
             cfg.rc_qp_max = int(rc.get("QPmax", -1)) # optional
         elif rc["mode"] == "CBR":
             cfg.rc_mode = RC_mode.cVBR
-            _required("bitrate", rc, "CBR requires an explicit bitrate")
+            _requires("bitrate", rc, "CBR requires an explicit bitrate")
             cfg.rc_bitrate = int(rc["bitrate"])
             cfg.rc_window_size = int(rc.get("window_size", 1))
             cfg.rc_qp_min = int(rc.get("QPmin", -1))
@@ -199,7 +186,7 @@ class EncoderConfig:
         elif slicing["mode"] == "fixed":
             cfg.slices_per_frame = int(slicing.get("parameter", 8))
         elif slicing["mode"] == "max":
-            raise EncoderConfigException("Slice mode 'max' not implemented")
+            raise ConfigException("Slice mode 'max' not implemented")
         ########################################
         # Error resilience
         erm = data.get("ErrorResilience", { "mode": "no" })
@@ -208,7 +195,7 @@ class EncoderConfig:
             cfg.intra_refresh_period = -1
         elif erm["mode"] == "pIntra":
             cfg.error_resilience_mode = ErrorResilienceMode.PERIODIC_INTRA
-            _required("parameter", erm, "missing required parameter for ErrorResilience mode = pIntra")
+            _requires("parameter", erm, "missing required parameter for ErrorResilience mode = pIntra")
             cfg.intra_refresh_period = int(erm["parameter"])
         elif erm["mode"] in ["fIntra", "ACK", "NACK"]:
             cfg.error_resilience_mode = ErrorResilienceMode.FEEDBACK_BASED
@@ -232,11 +219,11 @@ class EncoderConfig:
         cfg._encoding_delay = EncodingDelay(**data.get("EncodingDelay", encoding_default))
         cfg.buffers = data.get("Buffers", [])
         if len(cfg.buffers) == 0 or len(cfg.buffers) > 2:
-            raise EncoderConfigException("invalid Buffers configuration")
+            raise ConfigException("invalid Buffers configuration")
         ########################################
         # Buffers/Frames
         for i, buff in enumerate(cfg.buffers):
-            _required("V-Trace", buff, f'"V-Trace" not defined on buffer {i}')
+            _requires("V-Trace", buff, f'"V-Trace" not defined on buffer {i}')
             p = buff["V-Trace"]
             assert Path(p).exists(), f'V-Trace file not found {p}'
         cfg.frame_width = data.get("frame_width", 2048)
@@ -245,14 +232,13 @@ class EncoderConfig:
         cfg.total_frames = data.get("total_frames", -1)
         cfg.buffer_interleaving = data.get("buffer_interleaving", False)
         cfg.cu_size = data.get("cu_size", 64)
-        _required("S-Trace", data, f'"S-Trace" output path definition missing')
+        _requires("S-Trace", data, f'"S-Trace" output path definition missing')
         cfg.strace_output = data["S-Trace"]
         return cfg
 
     @classmethod
-    def load(cls, path) -> 'EncoderConfig':
-        r = cls()
-        with open(path, 'r') as f:
+    def load(cls, p:Path) -> 'EncoderConfig':
+        with open(p, 'r') as f:
             cfg = json.load(f)
             return cls.parse_config(cfg)
 
@@ -391,10 +377,10 @@ class XRTM(Enum):
     I_PSNR_U = CSV("i_u_psnr", float)
     I_PSNR_V = CSV("i_v_psnr", float)
     I_PSNR_YUV = CSV("i_yuv_psnr", float)
-    # I_SSIM = CSV("i_ssim", float)
-    # I_SSIM_DB = CSV("i_ssim_db", float)
-    # P_SSIM = CSV("i_ssim", float)
-    # P_SSIM_DB = CSV("i_ssim_db", float)
+    I_SSIM = CSV("i_ssim", float)
+    I_SSIM_DB = CSV("i_ssim_db", float)
+    P_SSIM = CSV("i_ssim", float)
+    P_SSIM_DB = CSV("i_ssim_db", float)
 
     P_QP = CSV("p_qp", float)
     P_BITS = CSV("p_bits", int)
@@ -417,7 +403,7 @@ class XRTM(Enum):
     # PTraceTx
     NUMBER = CSV("number", int, None)
     NUMBER_IN_SLICE = CSV("number_in_slice", int, None)
-    LAST_IN_SLICE = CSV("last_in_slice", bool, int)
+    LAST_IN_SLICE = CSV("last_in_slice", bool, lambda b: 1 if b else 0)
     DELAY = CSV("delay", int, None)
     S_TRACE = CSV("s_trace", )
 
@@ -632,6 +618,17 @@ class VTraceTx(CsvRecord):
     def is_full_intra(self):
         return self.intra == 1.
 
+def validates_cu_distribution(vt:VTraceTx, raise_exception=True) -> bool:
+    total = vt.intra + vt.inter + vt.skip + vt.merge
+    valid = round(total * 100) == 100
+    if not valid:
+        e_msg = f'Invalid CU distribution on frame {vt.encode_order} - sum of all CUs is {total}%'
+        if raise_exception:
+            raise ValueError(e_msg)
+        logger.critical(e_msg)
+    return valid
+
+
 class VTraceRx(VTraceTx):
     """
     TODO: implement V'Trace
@@ -659,7 +656,8 @@ class STraceTx(CsvRecord):
     def from_slice(cls, s:'Slice') -> 'STraceTx':
         st = cls({})
         st.time_stamp_in_micro_s = s.time_stamp_in_micro_s
-        st.index = s.slice_idx
+        st.frame_idx = s.frame_idx
+        st.index = -1
         st.size = s.size
         st.eye_buffer = s.view_idx
         st.render_timing = s.render_timing
@@ -692,8 +690,6 @@ class PTraceTx(CsvRecord):
             XRTM.RENDER_TIMING,
             XRTM.S_TRACE
     ]
-
-    HEADER_SIZE = 40
     
     def is_fragment(self) ->  bool:
         return not (self.number_in_slice == 0 and self.last_in_slice)
@@ -704,8 +700,8 @@ class PTraceTx(CsvRecord):
         p.importance = s.importance
         p.render_timing = s.render_timing
         p.eye_buffer = s.eye_buffer
-        p.type = s.slice_type
-        p.time_stamp_in_micro_s = s.time_stamp_in_micro_s + p.delay
+        p.type = s.type
+        p.time_stamp_in_micro_s = s.time_stamp_in_micro_s
         return p
 
 
@@ -730,25 +726,20 @@ class RateControl:
         self.mode = cfg.rc_mode
         
         # for now, assuming bitrate is split equally between all buffers 
-        self.bitrate = cfg.rc_bitrate / len(cfg.buffers)
+        self.bitrate = cfg.rc_bitrate
         self.frame_rate = cfg.frame_rate
         self.window_duration = cfg.rc_window_size * cfg.get_frame_duration()
+        self._buffer_count = len(cfg.buffers)
+        self._target_buffer_bitrate = self.bitrate / self._buffer_count
         self._window = []
 
         self.target_qp = cfg.rc_target_qp
         self.qp_min = cfg.rc_qp_min
         self.qp_max = cfg.rc_qp_max
-
-    def update_frame_budget(self, used_bits:int) -> bool:
-        # for now, assuming this gets called once per frame (not per buffer)
-        self._window.append(used_bits)
-        self._window = self._window[-self.window_size:]
-        return sum(self._window) < self.window_budget
-
+    
     def get_frame_budget(self) -> int:
-        if len(self._window) == 0:
-            return self.bitrate / self.frame_rate
-        
+        return self.bitrate / self.frame_rate
+    
 
 
 def model_pnsr_adjustment(qp_new, qp_ref, psnr):
@@ -883,7 +874,7 @@ class Frame:
             intra_cu_size = lambda : math.ceil(random.gauss(self.intra_mean, INTRA_VARIANCE) * i_qp_factor / 8)
             inter_cu_size = lambda : math.ceil(random.gauss(self.inter_mean, INTER_VARIANCE) * p_qp_factor / 8)
 
-        size = 0
+        frame_size = 0
         i_qp = self.i_qp if qp < 0 else self.i_qp
         i_y_psnr = self.i_y_psnr if qp < 0 else model_pnsr_adjustment(qp, self.i_qp, self.i_y_psnr)
         i_yuv_psnr = self.i_yuv_psnr if qp < 0 else model_pnsr_adjustment(qp, self.i_qp, self.i_yuv_psnr)
@@ -892,9 +883,8 @@ class Frame:
         p_yuv_psnr = self.p_yuv_psnr if qp < 0 else model_pnsr_adjustment(qp, self.p_qp, self.p_yuv_psnr)
         
         for s in self.slices:
-
             rpl = refs.get_rpl(s.slice_idx)
-            
+            slice_size = 0
             for cu in self.cu_map.get_slice(s.cu_address, s.cu_count):
                 if cu.mode == CU_mode.SKIP:
                     cu.reference = rpl[0]
@@ -912,7 +902,8 @@ class Frame:
                     cu.psnr_yuv = i_yuv_psnr
                     cu.reference = None
                     cu.size = inter_cu_size()
-                size += cu.size
-        
-        return size
+                slice_size += cu.size
+            s.size = slice_size
+            frame_size += slice_size
+        return frame_size
 

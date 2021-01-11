@@ -15,13 +15,6 @@ import argparse
 
 from abc import ABC, abstractmethod
 
-from .exceptions import (
-    VTraceTxException,
-    EncoderConfigException,
-    RateControlException,
-    FeedbackException
-)
-
 from .models import (
     VTraceTx,
     STraceTx,
@@ -36,26 +29,16 @@ from .models import (
     RefPicList
 )
 
-from .utils import (
-    read_csv_vtraces
-)
 
 from .feedback import (
     Feedback,
     FeedbackType,
 )
 
+from .utils import ConfigException
+
 logger = logging.getLogger(__name__)
 
-def validates_cu_distribution(vt:VTraceTx, raise_exception=True) -> bool:
-    total = vt.intra + vt.inter + vt.skip + vt.merge
-    valid = round(total * 100) == 100
-    if not valid:
-        e_msg = f'Invalid CU distribution on frame {vt.encode_order} - sum of all CUs is {total}%'
-        if raise_exception:
-            raise VTraceTxException(e_msg)
-        logger.critical(e_msg)
-    return valid
 
 def validate_encoder_config(cfg):
 
@@ -68,19 +51,19 @@ def validate_encoder_config(cfg):
     ]
 
     if not cfg.error_resilience_mode in err_modes:
-        raise EncoderConfigException(f'invalid resilience mode. must be one of {err_modes}')
+        raise ConfigException(f'invalid resilience mode. must be one of {err_modes}')
 
     if cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_INTRA and cfg.intra_refresh_period == -1:
-        raise EncoderConfigException('PERIODIC_FRAME error resilience requires an explicit intra refresh preriod')
+        raise ConfigException('PERIODIC_FRAME error resilience requires an explicit intra refresh preriod')
 
     if (cfg.frame_width % cfg.cu_size) != 0:
-        raise EncoderConfigException(f'frame width must be a multiple of {cfg.cu_size}')
+        raise ConfigException(f'frame width must be a multiple of {cfg.cu_size}')
 
     if (cfg.frame_height % cfg.cu_size) != 0:
-        raise EncoderConfigException(f'frame height must be a multiple of {cfg.cu_size}')
+        raise ConfigException(f'frame height must be a multiple of {cfg.cu_size}')
 
     if ((cfg.frame_height / cfg.slices_per_frame ) % cfg.cu_size) != 0:
-        raise EncoderConfigException(f'({cfg.frame_height}px / {cfg.slices_per_frame} slices) is not a multiple of {cfg.cu_size}')
+        raise ConfigException(f'({cfg.frame_height}px / {cfg.slices_per_frame} slices) is not a multiple of {cfg.cu_size}')
 
 def is_perodic_intra_refresh(frame_idx:int, intra_refresh_period:int, offset=0) -> bool:
     return (frame_idx > 0) and (((frame_idx - offset) % intra_refresh_period) == 0)
@@ -113,13 +96,15 @@ class BaseEncoder(AbstracEncoder):
 
     def encode(self, vtrace:VTraceTx, feedback:List[Feedback] = None) -> List[STraceTx]:
         
-        is_intra_frame = self.frame_idx == 0
+        is_intra_frame = False
         is_perodic_intra = False
         
-        if self.cfg.error_resilience_mode == ErrorResilienceMode.DISABLED and not is_intra_frame:
+        if self.frame_idx == 0:
+            is_intra_frame = True
+        elif self.cfg.error_resilience_mode == ErrorResilienceMode.DISABLED:
             is_intra_frame = vtrace.is_full_intra
         elif self.cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_INTRA:
-            is_perodic_intra = is_perodic_intra_refresh(self.frame_idx, self.cfg.intra_refresh_period) 
+            is_perodic_intra = (self.frame_idx % self.cfg.intra_refresh_period) == 0
         
         # handle feedback
         if len(feedback) > 0:
@@ -259,8 +244,9 @@ class MultiViewEncoder:
             refresh = ''
             frame_file = f'{self.frame_idx}_{buff_idx}.csv'
             for s in enc.encode(vtrace, feedback):
-                s.render_timing = timestamp
-                s.time_stamp_in_micro_s = timestamp + self.cfg.get_encoding_delay() + self.cfg.get_buffer_delay(buff_idx)
+                s.frame_idx = self.frame_idx
+                s.render_timing = round(timestamp)
+                s.time_stamp_in_micro_s = round(timestamp + self.cfg.get_encoding_delay() + self.cfg.get_buffer_delay(buff_idx))
                 s.index = self.slice_idx
                 s.frame_file = frame_file
                 refresh += str(s.type.value)
