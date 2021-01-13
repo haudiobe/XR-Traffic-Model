@@ -121,7 +121,7 @@ class EncoderConfig:
     def get_encoding_delay(self):
         if self._encoding_delay == None:
             return 0
-        return self._encoding_delay.get_delay(self.slices_per_frame, self.get_frame_duration(unit=1e3))
+        return self._encoding_delay.get_delay(self.slices_per_frame, self.get_frame_duration())
     
     def get_buffer_delay(self, buff_idx:int):
         """
