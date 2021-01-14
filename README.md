@@ -1,7 +1,8 @@
 # XR-Traffic-Model
 
-
 ## Installation
+
+> **python 3.6.9 or above is needed**
 
 **get the code**
 ```
