@@ -69,12 +69,11 @@ def is_perodic_intra_refresh(frame_idx:int, intra_refresh_period:int, offset=0) 
     return (frame_idx > 0) and (((frame_idx - offset) % intra_refresh_period) == 0)
 
 def get_importance_index(refs:RefPicList, s:Slice, cfg:EncoderConfig) -> int:
-    importance = cfg.slices_per_frame
-    if s.slice_type != SliceType.IDR:
-        delta = refs.get_previous_intra_delta(s) + 1
-        assert delta > 0
-        importance = importance - delta // cfg.intra_refresh_period
-    # print(f'[{s.frame_idx}][{s.view_idx}][{s.slice_idx}].type:{s.slice_type} - .delta:{delta} - .importance:{imp}')
+    assert s.frame == refs.frames[-1]
+    delta_max = cfg.slices_per_frame * cfg.intra_refresh_period
+    delta = refs.get_previous_intra_delta(s)
+    importance = delta_max - delta
+    # print(f'[{s.frame_idx}][{s.view_idx}][{s.slice_idx}].type:{s.slice_type} - .delta:{delta} - .importance:{importance}')
     return importance
 
 
@@ -193,7 +192,7 @@ class BaseEncoder(AbstracEncoder):
         traces = []
         for s in frame.slices:
             s.importance = get_importance_index(self.refs, s, self.cfg)
-            traces.append(STraceTx.from_slice(S))
+            traces.append(STraceTx.from_slice(s))
         return traces
 
 

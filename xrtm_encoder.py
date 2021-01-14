@@ -38,7 +38,7 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
 
     cfg_path = Path(args.config)
-    assert cfg_path.exists(), 'config file not found'
+    assert cfg_path.exists(), f'config file not found: {cfg_path.resolve()}'
 
     cfg = EncoderConfig.load(cfg_path)
     encoder = MultiViewEncoder(cfg, args.user_id)

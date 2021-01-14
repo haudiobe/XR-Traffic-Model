@@ -906,6 +906,7 @@ class RefPicList(ReferenceableList):
         Assuming slice cu_address & cu_count does not vary, Feedback not taken into account.
         :Return: how many frames since prev intra slice, -1 if None were found
         """
+        assert s.frame == self.frames[-1], 'slice s must be slice of the latest buffered frame'
         frame = self.get_previous_intra_frame(s)
         assert frame != None
         delta = s.frame_idx - frame.frame_idx
