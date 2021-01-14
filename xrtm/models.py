@@ -1,7 +1,7 @@
 import os
 import shutil
 import csv
-from typing import Any, Iterator, List, Dict, Callable
+from typing import Any, Iterator, List, Dict, Callable, Tuple
 from enum import Enum, IntEnum
 import json
 import zlib
@@ -62,10 +62,10 @@ class Delay:
 
 class EncodingDelay(Delay):
     
-    def get_delay(self, no_slices:float, frame_interval_ms:float):
+    def get_delay(self, no_slices:float, frame_interval_micro_sec:float):
         if self.mode == self.GAUSSIANTRUNC:
             mean, std = self.parameter1 / no_slices, self.parameter2 / no_slices
-            lower, upper = 0, frame_interval_ms / no_slices
+            lower, upper = 0, frame_interval_micro_sec / no_slices
             a, b = (lower - mean) / std, (upper - mean) / std
             r = stats.truncnorm(a, b, loc=mean, scale=std).rvs()
             return r
@@ -101,7 +101,6 @@ class EncoderConfig:
         self.cu_size = 64
         
         # slices/CU refs
-        self.max_refs = 1
         self.strace_output = './S-Trace.csv'
 
     def get_cu_per_frame(self):
@@ -121,16 +120,11 @@ class EncoderConfig:
     def get_encoding_delay(self):
         if self._encoding_delay == None:
             return 0
-        return self._encoding_delay.get_delay(self.slices_per_frame, self.get_frame_duration())
+        no_slices = len(self.buffers) * self.slices_per_frame
+        return self._encoding_delay.get_delay(no_slices, self.get_frame_duration())
     
     def get_buffer_delay(self, buff_idx:int):
-        """
-        the buffer delay to apply when buffers are interleaved
-        NOTE:
-            * for len(self.buffers) > 2, it is frame_duration / 2
-            * behavior has not been discussed for len(self.buffers) > 2
-        """
-        return 0 if buff_idx == 0 else self.get_frame_duration() / 2
+        return 0 if buff_idx == 0 else self.get_frame_duration() / len(self.buffers)
 
     def get_frames_dir(self, user_idx=-1, mkdir=False, overwrite=False):
         p = Path(self.strace_output)
@@ -753,8 +747,6 @@ class Slice(Referenceable):
     def __init__(self, frame:'Frame', slice_idx:int):
         
         self._frame = frame
-        self.view_idx = frame.view_idx
-        self.frame_idx = frame.frame_idx
         # assuming all slices in frame have an equal cu count
         self.slice_idx = slice_idx
         self.cu_count = frame.cu_per_slice
@@ -775,6 +767,18 @@ class Slice(Referenceable):
         self.v_psnr = -1
         self.yuv_psnr = -1
 
+    @property
+    def frame(self):
+        return self._frame
+    
+    @property
+    def view_idx(self):
+        return self._frame.view_idx
+    
+    @property
+    def frame_idx(self):
+        return self._frame.frame_idx
+
     def get_referenceable_status(self):
         return self._referenceable
 
@@ -783,51 +787,16 @@ class Slice(Referenceable):
     
     referenceable = property(get_referenceable_status, set_referenceable_status)
 
-class RefPicList(ReferenceableList):
-    
-    def __init__(self, max_size:int=16):
-        self.max_size = max_size
-        self.frames = []
-
-    def is_empty(self) -> bool:
-        return len(self.frames) == 0
-
-    def push(self, pic:'Frame'):
-        self.frames.append(pic)
-        self.frames = self.frames[-self.max_size:]
-
-    def get_rpl(self, slice_idx:int) -> List[int]:
-        return [*self.iter(slice_idx)]
-
-    def find_intra(self, slice_idx:int) -> int:
-        for frame in reversed(self.frames):
-            if frame.slices[slice_idx].slice_type == SliceType.IDR:
-                return frame.frame_idx
-        return None
-
-    def iter(self, slice_idx:int) -> Iterator[int]:
-        for frame in reversed(self.frames):
-            if frame.slices[slice_idx].referenceable:
-                yield frame.frame_idx
-            if frame.slices[slice_idx].slice_type == SliceType.IDR:
-                return
-
-    def set_referenceable_status(self, frame_idx:int, slice_idx:int, status:bool):
-        for frame in reversed(self.frames):
-            if frame.frame_idx == frame_idx:
-                frame.slices[slice_idx].referenceable = status
-                return
-
-    def reset(self, slice_idx:int=None):
-        self.frames = []
 
 class Frame:
 
     def __init__(self, 
             vtrace:VTraceTx,
             cfg:EncoderConfig,
-            view_idx=0
+            view_idx=0,
+            frame_idx=-1
         ):
+        self.frame_idx = frame_idx
         self.view_idx = view_idx
         self.slices_per_frame = cfg.slices_per_frame
         self.cu_per_slice = cfg.get_cu_per_slice()
@@ -862,7 +831,7 @@ class Frame:
             cu_list = CuMap.draw_ctus(count, self.cu_distribution)
         self.cu_map.update_slice(address, cu_list)
 
-    def encode(self, qp:int, refs:RefPicList):
+    def encode(self, qp:int, refs:'RefPicList'):
         """
         Iterates through the frame's CU map and set the CU's `reference` and `size` properties. w/ inter_cu_variance = 0.2, intra_cu_variance = 0.1
         """
@@ -881,7 +850,7 @@ class Frame:
         frame_size = 0
 
         for s in self.slices:
-            rpl = refs.get_rpl(s.slice_idx)
+            rpl = refs.get_rpl(s)
             slice_size = 0
             for cu in self.cu_map.get_slice(s.cu_address, s.cu_count):
                 if cu.mode == CU_mode.SKIP:
@@ -905,3 +874,71 @@ class Frame:
             frame_size += slice_size 
         return frame_size
 
+class RefPicList(ReferenceableList):
+    
+    def __init__(self):
+        self.frames = []
+
+    def is_empty(self) -> bool:
+        return len(self.frames) == 0
+
+    def push(self, pic:'Frame'):
+        self.frames.append(pic)
+        self.drop_unreferenced_frames()
+
+    def drop_unreferenced_frames(self):
+        """
+        drop old frames that are beyond I slices (IDR):
+        """
+        if len(self.frames) == 0:
+            return
+        delta = self.get_largest_intra_delta() + 1
+        self.frames = self.frames[-delta:]
+
+    def get_previous_intra_frame(self, s:Slice) -> 'Frame':
+        for frame in reversed(self.frames):
+            if frame.slices[s.slice_idx].slice_type == SliceType.IDR:
+                return frame
+        return None
+
+    def get_previous_intra_delta(self, s:Slice) -> int:
+        """
+        Assuming slice cu_address & cu_count does not vary, Feedback not taken into account.
+        :Return: how many frames since prev intra slice, -1 if None were found
+        """
+        frame = self.get_previous_intra_frame(s)
+        assert frame != None
+        delta = s.frame_idx - frame.frame_idx
+        assert delta >= 0
+        return delta
+
+    def get_largest_intra_delta(self):
+        assert len(self.frames) > 0, 'referenceable frame buffer is empty'
+        largest_intra_delta = -1
+        for s in self.frames[-1].slices:
+            slice_intra_delta = self.get_previous_intra_delta(s)
+            assert slice_intra_delta >= 0, f'no intra frame found for {s.slice_idx}'
+            largest_intra_delta = max(largest_intra_delta, slice_intra_delta)
+        return largest_intra_delta
+
+    def iter_referenceable_frames(self, s:Slice) -> Iterator[Tuple[int, int]]:
+        """
+        iter frames that can be referenced by this slice
+        """
+        for i, frame in enumerate(reversed(self.frames)):
+            if frame.slices[s.slice_idx].referenceable:
+                yield i, frame.frame_idx
+            if frame.slices[s.slice_idx].slice_type == SliceType.IDR:
+                return i, None
+
+    def get_rpl(self, s:Slice) -> List[int]:
+        return [frame_idx for _, frame_idx in self.iter_referenceable_frames(s)]
+
+    def set_referenceable_status(self, frame_idx:int, slice_idx:int, status:bool):
+        for frame in reversed(self.frames):
+            if frame.frame_idx == frame_idx:
+                frame.slices[slice_idx].referenceable = status
+                return
+
+    def reset(self, slice_idx:int=None):
+        self.frames = []

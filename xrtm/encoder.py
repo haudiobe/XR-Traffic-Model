@@ -65,8 +65,18 @@ def validate_encoder_config(cfg):
     if ((cfg.frame_height / cfg.slices_per_frame ) % cfg.cu_size) != 0:
         raise ConfigException(f'({cfg.frame_height}px / {cfg.slices_per_frame} slices) is not a multiple of {cfg.cu_size}')
 
-def is_perodic_intra_refresh(frame_idx:int, intra_refresh_period:int, offset=0) -> bool:
+def is_perodic_intra_refresh(frame_idx:int, intra_refresh_period:int, offset=0) -> bool: 
     return (frame_idx > 0) and (((frame_idx - offset) % intra_refresh_period) == 0)
+
+def get_importance_index(refs:RefPicList, s:Slice, cfg:EncoderConfig) -> int:
+    importance = cfg.slices_per_frame
+    if s.slice_type != SliceType.IDR:
+        delta = refs.get_previous_intra_delta(s) + 1
+        assert delta > 0
+        importance = importance - delta // cfg.intra_refresh_period
+    # print(f'[{s.frame_idx}][{s.view_idx}][{s.slice_idx}].type:{s.slice_type} - .delta:{delta} - .importance:{imp}')
+    return importance
+
 
 class AbstracEncoder(ABC):
 
@@ -85,7 +95,7 @@ class BaseEncoder(AbstracEncoder):
         self.cfg = cfg
         self.rc = rc
         self._default_referenceable_status = self.cfg.error_resilience_mode != ErrorResilienceMode.FEEDBACK_BASED_ACK
-        self.refs = RefPicList(max_size=cfg.max_refs)
+        self.refs = RefPicList()
         self.frame_idx = 0
         self.periodic_intra_slice_idx = 0
 
@@ -119,7 +129,7 @@ class BaseEncoder(AbstracEncoder):
                     pass
 
         # draw CU map
-        frame = Frame(vtrace, self.cfg, view_idx=self._view_idx)
+        frame = Frame(vtrace, self.cfg, view_idx=self._view_idx, frame_idx=self.frame_idx)
         frame.draw(intra_refresh=is_intra_frame)
 
         # slice type decision 
@@ -137,7 +147,7 @@ class BaseEncoder(AbstracEncoder):
             # take feedback into account
             if self.cfg.error_resilience_mode >= ErrorResilienceMode.FEEDBACK_BASED:
                 # rpl is the list of pictures that can be referenced by this slice
-                rpl = self.refs.get_rpl(S.slice_idx)
+                rpl = self.refs.get_rpl(S)
                 refresh = False
                 if S.slice_type == SliceType.P:
                     if len(rpl) == 0:
@@ -151,7 +161,7 @@ class BaseEncoder(AbstracEncoder):
                 if refresh:
                     S.slice_type = SliceType.IDR
                     frame.draw(address=S.cu_address, count=S.cu_count, intra_refresh=True)
-
+            
         # encode CU map, computes the frame size in bytes
         qp = self.rc.target_qp
         size = frame.encode(qp, self.refs) * 8
@@ -178,8 +188,13 @@ class BaseEncoder(AbstracEncoder):
         self.refs.push(frame)
         self.frame_idx += 1
         if is_perodic_intra:
-            self.periodic_intra_slice_idx = (self.periodic_intra_slice_idx+1) % self.cfg.slices_per_frame
-        return [STraceTx.from_slice(S) for S in frame.slices]
+            self.periodic_intra_slice_idx = (self.periodic_intra_slice_idx + 1) % self.cfg.slices_per_frame
+        
+        traces = []
+        for s in frame.slices:
+            s.importance = get_importance_index(self.refs, s, self.cfg)
+            traces.append(STraceTx.from_slice(S))
+        return traces
 
 
 class VTraceIterator:
@@ -235,32 +250,38 @@ class MultiViewEncoder:
         """
         assert len(vtraces) == len(self.buffers), "expecting synchornous buffers (one vtrace p. buffer)"
         t0 = time.perf_counter()
-
-        timestamp = self.frame_idx * self.frame_duration + self.cfg.get_pre_delay()
+        # render_timing 
+        timestamp = self.frame_idx * self.frame_duration
         straces = []
         buff_idx = 0
+        pre_delay = self.cfg.get_pre_delay()
         
         for vtrace, enc in zip(vtraces, self.buffers):
-            refresh = ''
             frame_file = f'{self.frame_idx}_{buff_idx}.csv'
-            slice_delay = 0
+            
+            if self.cfg.buffer_interleaving:
+                render_timing = round(timestamp + self.cfg.get_buffer_delay(buff_idx))
+                pre_delay = self.cfg.get_pre_delay()
+            else:
+                render_timing = round(timestamp)
+
+            slice_delay = 0 # slice delay is reset for each buffer
+
             for s in enc.encode(vtrace, feedback):
                 s.frame_idx = self.frame_idx
-                s.render_timing = round(timestamp)
+                s.render_timing = render_timing
                 slice_delay += self.cfg.get_encoding_delay()
-                s.time_stamp_in_micro_s = round(timestamp + slice_delay + self.cfg.get_buffer_delay(buff_idx))
+                s.time_stamp_in_micro_s = round(render_timing + pre_delay + slice_delay)
                 s.index = self.slice_idx
                 s.eye_buffer = buff_idx
                 s.frame_file = str(self.frames_dir / frame_file)
-                refresh += str(s.type.value)
                 straces.append(s)
                 self.slice_idx += 1
             enc.dump_frame_file( self.frames_dir / frame_file )
-            print(f'{buff_idx}: {refresh}')
             buff_idx += 1
 
         elapsed = round((time.perf_counter()-t0) * 1e3)
-        print(f'frame: {self.frame_idx} - ts: {round(timestamp/1e3)}ms - processing: {elapsed}ms')
+        print(f'frame: {self.frame_idx} - processing: {elapsed}ms')
 
         self.frame_idx += 1
         return straces
