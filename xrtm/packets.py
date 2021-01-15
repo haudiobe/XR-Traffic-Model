@@ -49,13 +49,13 @@ class Packetizer:
     def process(self, slices:Iterable[STraceTx], seqnum = 0) -> Iterable[PTraceTx]:
         seqnum = seqnum
         for s in slices:
-            p_in_slice = 0
             for p in pack(seqnum, s, mtu=self.cfg.pckt_max_size, header_size=self.cfg.pckt_overhead):
                 seqnum += 1
                 p.user_id = self.user_id
                 p.delay = 0
                 p.index = s.index
                 p.render_timing = s.render_timing
+                p.time_stamp_in_micro_s = s.time_stamp_in_micro_s
                 p.type = s.type
                 p.eye_buffer = s.eye_buffer
                 p.s_trace = None
