@@ -162,28 +162,29 @@ class BaseEncoder(AbstracEncoder):
                     frame.draw(address=S.cu_address, count=S.cu_count, intra_refresh=True)
             
         # encode CU map, computes the frame size in bytes
-        qp = self.rc.target_qp
-        size = frame.encode(qp, self.refs) * 8
-        budget = self.rc.get_frame_budget()
+        if self.rc.mode == RC_mode.VBR:
+            if self.rc.target_qp < 0:
+                size = frame.encode(self.refs) * 8
+            else:
+                size = frame.encode(self.refs, i_qp=self.rc.target_qp, p_qp=self.rc.target_qp) * 8
+        else:
+            size = frame.encode(self.refs) * 8
+            budget = self.rc.get_frame_budget()
+            # print(f'initial size:{size} - budget:{budget}')
 
-        # adjust if too large
-        if self.rc.mode in [RC_mode.cVBR, RC_mode.CBR] and (size > budget):
-            qp = int(min(frame.i_qp, frame.p_qp))
-            while size > budget:
-                if self.rc.qp_max > 0 and qp > self.rc.qp_max:
-                    break
-                size = frame.encode(qp, self.refs) * 8
-                qp += 1
+            if self.rc.mode in [RC_mode.cVBR, RC_mode.CBR] and (size > budget):
+                for i_qp, p_qp in self.rc.iter_qp_adjustments(frame, step=1):
+                    size = frame.encode(self.refs, i_qp=i_qp, p_qp=p_qp) * 8
+                    if size <= budget:
+                        break
 
-        # adjust if too small
-        elif self.rc.mode == RC_mode.CBR and (size < budget):
-            qp = int(max(frame.i_qp, frame.p_qp))
-            while size < budget:
-                if self.rc.qp_min > 0 and qp < self.rc.qp_min:
-                    break
-                size = frame.encode(qp, self.refs) * 8
-                qp -= 1
-        
+            elif self.rc.mode == RC_mode.CBR and (size < budget):
+                for i_qp, p_qp in self.rc.iter_qp_adjustments(frame, step=-1):
+                    size_new = frame.encode(self.refs, i_qp=i_qp, p_qp=p_qp) * 8
+                    if size_new > budget:
+                        break
+                    size = size_new
+            
         self.refs.push(frame)
         self.frame_idx += 1
         if is_perodic_intra:

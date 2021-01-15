@@ -733,11 +733,30 @@ class RateControl:
         self.qp_min = cfg.rc_qp_min
         self.qp_max = cfg.rc_qp_max
     
-    def get_frame_budget(self) -> int:
-        return self.bitrate / self.frame_rate
+    def get_frame_budget(self) -> int: # bits
+        return self._target_buffer_bitrate / self.frame_rate
     
+    def _clamp_qp(self, qp):
+        if self.qp_min != -1 and qp < self.qp_min:
+            return self.qp_min, True
+        if self.qp_max != -1 and qp > self.qp_max:
+            return self.qp_max, True
+        return qp, False
 
-
+    def iter_qp_adjustments(self, frame:'Frame', step=1):
+        assert self.mode in [RC_mode.cVBR, RC_mode.CBR]
+        i_qp_new = frame.i_qp + step
+        p_qp_new = frame.p_qp + step
+        while True:
+            i_qp_new, i_clamped = self._clamp_qp(i_qp_new)
+            p_qp_new, p_clamped = self._clamp_qp(p_qp_new)
+            yield i_qp_new, p_qp_new
+            if i_clamped and p_clamped:
+                print('target QP range exceeded')
+                return
+            i_qp_new += step
+            p_qp_new += step
+        
 def model_pnsr_adjustment(qp_new, qp_ref, psnr):
     qp_delta = qp_new - qp_ref
     return psnr + qp_delta
@@ -831,21 +850,31 @@ class Frame:
             cu_list = CuMap.draw_ctus(count, self.cu_distribution)
         self.cu_map.update_slice(address, cu_list)
 
-    def encode(self, qp:int, refs:'RefPicList'):
+    def encode(self, refs:'RefPicList', i_qp:int=-1, p_qp:int=-1):
         """
         Iterates through the frame's CU map and set the CU's `reference` and `size` properties. w/ inter_cu_variance = 0.2, intra_cu_variance = 0.1
         """
-        qp_adjustment = lambda qp, qp_ref : pow(2, (qp - qp_ref)/6)
+        qp_adjustment = lambda qp, qp_ref : pow(2, (qp_ref - qp)/6)
         
-        i_qp = self.i_qp if qp < 0 else qp
-        i_qp_factor = 1 if qp < 0 else qp_adjustment(qp, self.i_qp)
-        i_y_psnr = self.i_y_psnr if qp < 0 else model_pnsr_adjustment(qp, self.i_qp, self.i_y_psnr)
-        i_yuv_psnr = self.i_yuv_psnr if qp < 0 else model_pnsr_adjustment(qp, self.i_qp, self.i_yuv_psnr)
+        if i_qp > 0:
+            i_qp_factor = qp_adjustment(i_qp, self.i_qp)
+            i_y_psnr = model_pnsr_adjustment(i_qp, self.i_qp, self.i_y_psnr)
+            i_yuv_psnr = model_pnsr_adjustment(i_qp, self.i_qp, self.i_yuv_psnr)
+        else:
+            i_qp = self.i_qp
+            i_qp_factor = 1
+            i_y_psnr = self.i_y_psnr
+            i_yuv_psnr = self.i_yuv_psnr
 
-        p_qp = self.p_qp if qp < 0 else qp
-        p_qp_factor = 1 if qp < 0 else qp_adjustment(qp, self.p_qp)
-        p_y_psnr = self.p_y_psnr if qp < 0 else model_pnsr_adjustment(qp, self.p_qp, self.p_y_psnr)
-        p_yuv_psnr = self.p_yuv_psnr if qp < 0 else model_pnsr_adjustment(qp, self.p_qp, self.p_yuv_psnr)
+        if p_qp > 0:
+            p_qp_factor = qp_adjustment(p_qp, self.p_qp)
+            p_y_psnr = model_pnsr_adjustment(p_qp, self.p_qp, self.p_y_psnr)
+            p_yuv_psnr = model_pnsr_adjustment(p_qp, self.p_qp, self.p_yuv_psnr)
+        else:
+            p_qp = self.p_qp
+            p_qp_factor = 1
+            p_y_psnr = self.p_y_psnr
+            p_yuv_psnr = self.p_yuv_psnr
 
         frame_size = 0
 
