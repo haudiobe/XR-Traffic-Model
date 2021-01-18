@@ -162,7 +162,7 @@ class EncoderConfig:
             cfg.rc_qp_min = int(rc.get("QPmin", -1)) # default: -1
             cfg.rc_qp_max = int(rc.get("QPmax", -1)) # optional
         elif rc["mode"] == "CBR":
-            cfg.rc_mode = RC_mode.cVBR
+            cfg.rc_mode = RC_mode.CBR
             _requires("bitrate", rc, "CBR requires an explicit bitrate")
             cfg.rc_bitrate = int(rc["bitrate"])
             cfg.rc_window_size = int(rc.get("window_size", 1))
