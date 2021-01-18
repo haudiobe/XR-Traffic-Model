@@ -337,88 +337,6 @@ class SliceType(CsvEnum):
     IDR = 1
     P = 2
 
-
-class XRTM(Enum):
-    
-    @property
-    def name(self):
-        return self.value.name
-
-    @property
-    def default(self):
-        return self.value.default
-
-    def parse(self, data) -> Any:
-        return self.value.parse(data)
-
-    def serialize(self, data) -> str:
-        return self.value.serialize(data)
-
-    # Session cfg
-    USER_ID = CSV("user_id", int, None)
-    
-    # Generic fielnames
-    SIZE = CSV("size", int, None)
-    INDEX = CSV("index", int, None)
-    EYE_BUFFER = CSV("eye_buffer", int, None)
-    TIME_STAMP_IN_MICRO_S = CSV("time_stamp_in_micro_s", int, None, -1)
-    
-    # VTraceTx
-    VIEW_IDX = CSV("view_idx", int, None, -1) # 0: LEFT, 1: RIGHT
-    ENCODE_ORDER = CSV("encode_order", int)
-    I_QP = CSV("i_qp", int )
-    I_BITS = CSV("i_bits", int)
-    I_TOTAL_FRAME_TIME_MS = CSV("i_total_frame_time_ms", int)
-    I_PSNR_Y = CSV("i_y_psnr", float)
-    I_PSNR_U = CSV("i_u_psnr", float)
-    I_PSNR_V = CSV("i_v_psnr", float)
-    I_PSNR_YUV = CSV("i_yuv_psnr", float)
-    I_SSIM = CSV("i_ssim", float)
-    I_SSIM_DB = CSV("i_ssim_db", float)
-    P_SSIM = CSV("i_ssim", float)
-    P_SSIM_DB = CSV("i_ssim_db", float)
-
-    P_QP = CSV("p_qp", float)
-    P_BITS = CSV("p_bits", int)
-    P_TOTAL_FRAME_TIME_MS = CSV("p_total_frame_time_ms", int)
-    P_PSNR_Y = CSV("p_y_psnr", float)
-    P_PSNR_U = CSV("p_u_psnr", float)
-    P_PSNR_V = CSV("p_v_psnr", float)
-    P_PSNR_YUV = CSV("p_yuv_psnr", float)
-
-    PSNR_Y = CSV("y_psnr", float)
-    PSNR_U = CSV("u_psnr", float)
-    PSNR_V = CSV("v_psnr", float)
-    PSNR_YUV = CSV("yuv_psnr", float)
-
-    INTRA = CSV("intra", float)
-    INTER = CSV("inter", float)
-    SKIP = CSV("skip", float)
-    MERGE = CSV("merge", float)
-
-    # PTraceTx
-    NUMBER = CSV("number", int, None)
-    NUMBER_IN_SLICE = CSV("number_in_slice", int, None)
-    LAST_IN_SLICE = CSV("last_in_slice", bool, lambda b: 1 if b else 0)
-    DELAY = CSV("delay", int, None)
-    S_TRACE = CSV("s_trace", )
-
-    # STraceTx
-    FRAME_IDX = CSV("frame_idx", int, None)
-    SLICE_IDX = CSV("slice_idx", int)
-    TYPE = CSV("type", SliceType.parse, SliceType.serialize)
-    INTRA_MEAN = CSV("intra_mean", float)
-    INTER_MEAN = CSV("inter_mean", float)
-    IMPORTANCE = CSV("importance", int, None, -1)
-
-    RENDER_TIMING = CSV("render_timing", int)
-    START_ADDRESS_CU = CSV('start_address_cu', int, None)
-
-    REFS = CSV("refs", parse_list(int), serialize_list)
-    NUMBER_CUS = CSV('number_cus', int, None)
-    FRAME_FILE = CSV('frame_file', None, None)
-
-
 class CU_mode(CsvEnum):
     UNDEFINED = 0
     INTRA = 1
@@ -431,24 +349,6 @@ class CU_status(CsvEnum):
     DAMAGED         = 1
     UNAVAILABLE     = 2
 
-
-class CU(CsvRecord):
-    
-    attributes = [
-        CSV("address", int), # Address of CU in frame.
-        CSV("mode", CU_mode.parse, CU_mode.serialize, None), # The mode of the CU 1=intra, 2=merge, 3=skip, 4=inter
-        CSV("size", int), # Slice size in bytes.
-        CSV("reference", int), # The reference frame of the CU 0 n/a, 1=previous, 2=2 in past, etc.
-        CSV("qp", int), # the QP decided for the CU
-        CSV("psnr_y", int), # the estimated Y-PSNR for the CU in db multiplied by 1000
-        CSV("psnr_yuv", int) # the estimated weighted YUV-PSNR for the CU db multiplied by 1000
-    ]
-
-    def __init__(self, mode=CU_mode.UNDEFINED, size=-1, ref:List[int]=[], address=-1):
-        self.mode = mode
-        self.size = size
-        self.reference = ref
-        self.address = address
 
 
 
@@ -474,24 +374,24 @@ class CuMap:
         return intra, inter, merge, skip
 
     @classmethod
-    def draw_ctus(cls, count:int, weights:List[float]) -> List[CU]:
+    def draw_ctus(cls, count:int, weights:List[float]) -> List['CU']:
         return random.choices(
             [CU(CU_mode.INTRA), CU(CU_mode.INTER), CU(CU_mode.SKIP), CU(CU_mode.MERGE)], 
             weights=weights, 
             k=count)
 
     @classmethod
-    def draw_intra_ctus(cls, count:int) -> List[CU]:
+    def draw_intra_ctus(cls, count:int) -> List['CU']:
         return [CU(CU_mode.INTRA)] * count
 
     def draw(self, *args, **kwargs):
         self._map = self.draw_ctus(*args, **kwargs)
 
-    def get_slice(self, index:int, count:int) -> List[CU]:
+    def get_slice(self, index:int, count:int) -> List['CU']:
         stop = index + count
         return self._map[index:stop]
 
-    def update_slice(self, i:int, m:List[CU]):
+    def update_slice(self, i:int, m:List['CU']):
         stop = i + len(m)
         assert stop <= self.count
         self._map[i:stop] = m
@@ -516,60 +416,60 @@ class CuMap:
 class VTraceTx(CsvRecord):
 
     attributes = [
-            XRTM.TIME_STAMP_IN_MICRO_S,
-            XRTM.ENCODE_ORDER,
-
-            XRTM.I_QP,
-            XRTM.I_BITS,
-            XRTM.I_TOTAL_FRAME_TIME_MS,
-            XRTM.I_PSNR_Y,
-            XRTM.I_PSNR_U,
-            XRTM.I_PSNR_V,
-            XRTM.I_PSNR_YUV,
-
-            XRTM.P_QP,
-            XRTM.P_BITS,
-            XRTM.P_TOTAL_FRAME_TIME_MS,
-            XRTM.P_PSNR_Y,
-            XRTM.P_PSNR_U,
-            XRTM.P_PSNR_V,
-            XRTM.P_PSNR_YUV,
-
-            XRTM.INTRA,
-            XRTM.INTER,
-            XRTM.SKIP,
-            XRTM.MERGE
+            CSV("time_stamp_in_micro_s", int, None, -1),
+            CSV("encode_order", int),
+            CSV("i_qp", int),
+            CSV("i_bits", int),
+            CSV("i_y_psnr", int),
+            CSV("i_u_psnr", int),
+            CSV("i_v_psnr", int),
+            CSV("i_yuv_psnr", int),
+            CSV("i_ssim", int),
+            CSV("i_ssim_db", int),
+            CSV("i_total_frame_time_ms", int),
+            CSV("p_poc", int),
+            CSV("p_qp", int),
+            CSV("p_bits", int),
+            CSV("p_y_psnr", int),
+            CSV("p_u_psnr", int),
+            CSV("p_v_psnr", int),
+            CSV("p_yuv_psnr", int),
+            CSV("p_ssim", int),
+            CSV("p_ssim_db", int),
+            CSV("p_total_frame_time_ms", int),
+            CSV("intra", float),
+            CSV("merge", float),
+            CSV("skip", float),
+            CSV("inter", float)
     ]
 
     def __init__(self, data=None):
 
         super().__init__(data)
         
-        # TODO: clarify expected data range 
         for k in [
-            XRTM.I_QP,
-            XRTM.P_QP,
-            XRTM.INTRA,
-            XRTM.INTER,
-            XRTM.SKIP,
-            XRTM.MERGE
+            'i_qp',
+            'p_qp',
+            'intra',
+            'inter',
+            'skip',
+            'merge'
         ]:
-            v = getattr(self, k.name) / 100
-            setattr(self, k.name, v)
+            v = getattr(self, k) / 100
+            setattr(self, k, v)
 
-        # TODO: clarify expected data range 
         for k in [
-            XRTM.I_PSNR_Y,
-            XRTM.I_PSNR_U,
-            XRTM.I_PSNR_V,
-            XRTM.I_PSNR_YUV,
-            XRTM.P_PSNR_Y,
-            XRTM.P_PSNR_U,
-            XRTM.P_PSNR_V,
-            XRTM.P_PSNR_YUV
+            'i_y_psnr',
+            'i_u_psnr',
+            'i_v_psnr',
+            'i_yuv_psnr',
+            'p_y_psnr',
+            'p_u_psnr',
+            'p_v_psnr',
+            'p_yuv_psnr'
         ]:
-            v = getattr(self, k.name) / 1000
-            setattr(self, k.name, v)
+            v = getattr(self, k) / 1000
+            setattr(self, k, v)
 
     def get_intra_mean(self, cu_count):
        return self.i_bits / cu_count
@@ -585,17 +485,17 @@ class VTraceTx(CsvRecord):
     def get_psnr_ref(self, slice_type:SliceType) -> dict:
         if slice_type == SliceType.IDR:
             return {
-                XRTM.PSNR_Y.name: self.i_y_psnr,
-                XRTM.PSNR_U.name: self.i_u_psnr,
-                XRTM.PSNR_V.name: self.i_v_psnr,
-                XRTM.PSNR_YUV.name: self.i_yuv_psnr
+                'psnr_y': self.i_y_psnr,
+                'psnr_u': self.i_u_psnr,
+                'psnr_v': self.i_v_psnr,
+                'psnr_yuv': self.i_yuv_psnr
             }
         elif slice_type == SliceType.P:
             return {
-                XRTM.PSNR_Y.name: self.p_y_psnr,
-                XRTM.PSNR_U.name: self.p_u_psnr,
-                XRTM.PSNR_V.name: self.p_v_psnr,
-                XRTM.PSNR_YUV.name: self.p_yuv_psnr
+                'psnr_y': self.p_y_psnr,
+                'psnr_u': self.p_u_psnr,
+                'psnr_v': self.p_v_psnr,
+                'psnr_yuv': self.p_yuv_psnr
             }
         raise ValueError('invalid argument: slice_type')
 
@@ -635,67 +535,89 @@ class VTraceRx(VTraceTx):
 class STraceTx(CsvRecord):
 
     attributes = [
-        XRTM.INDEX,
-        XRTM.TIME_STAMP_IN_MICRO_S,
-        XRTM.RENDER_TIMING,
-        XRTM.IMPORTANCE,
-        XRTM.TYPE,
-        XRTM.SIZE,
-        XRTM.START_ADDRESS_CU,
-        XRTM.NUMBER_CUS,
-        XRTM.EYE_BUFFER,
-        XRTM.FRAME_FILE,
-        XRTM.FRAME_IDX
+        CSV("index", int, None),
+        CSV("time_stamp_in_micro_s", int, None, -1),
+        CSV("size", int, None),
+        CSV("render_timing", int),
+        CSV("buffer", int, None),
+        CSV("frame_index", int, None),
+        CSV("type", SliceType.parse, SliceType.serialize),
+        CSV("importance", int, None, -1),
+        CSV('start_address_cu', int, None),
+        CSV('number_cus', int, None),
+        CSV('frame_file', None, None)
     ]
 
     @classmethod
     def from_slice(cls, s:'Slice') -> 'STraceTx':
         st = cls({})
         st.time_stamp_in_micro_s = s.time_stamp_in_micro_s
-        st.frame_idx = s.frame_idx
+        st.frame_index = s.frame_idx
         st.index = -1
         st.size = s.size
-        st.eye_buffer = s.view_idx
+        st.buffer = s.view_idx
         st.render_timing = s.render_timing
         st.type = s.slice_type
         st.importance = s.importance
         st.start_address_cu = s.cu_address
         st.number_cus = s.cu_count
-        st.eye_buffer = s.view_idx
+        st.buffer = s.view_idx
         st.frame_file = None
         return st
 
 class STraceRx(STraceTx):
+    """
+    TODO: implement S'Trace
+    """
     pass
+
+
+class CU(CsvRecord):
+    
+    attributes = [
+        CSV("address", int), # Address of CU in frame.
+        CSV("size", int), # Slice size in bytes.
+        CSV("mode", CU_mode.parse, CU_mode.serialize, None), # The mode of the CU 1=intra, 2=merge, 3=skip, 4=inter
+        CSV("reference", int), # The reference frame of the CU 0 n/a, 1=previous, 2=2 in past, etc.
+        CSV("qpnew", int), # the QP decided for the CU
+        CSV("psnr_y", int), # the estimated Y-PSNR for the CU in db multiplied by 1000
+        CSV("psnr_yuv", int) # the estimated weighted YUV-PSNR for the CU db multiplied by 1000
+    ]
+
+    def __init__(self, mode=CU_mode.UNDEFINED, size=-1, ref:List[int]=[], address=-1):
+        self.mode = mode
+        self.size = size
+        self.reference = ref
+        self.address = address
 
 
 class PTraceTx(CsvRecord):
     
     attributes = [
-            XRTM.USER_ID,
-            XRTM.IMPORTANCE,
-            XRTM.NUMBER,
-            XRTM.NUMBER_IN_SLICE,
-            XRTM.LAST_IN_SLICE,
-            XRTM.SIZE,
-            XRTM.TIME_STAMP_IN_MICRO_S,
-            XRTM.DELAY,
-            XRTM.INDEX,
-            XRTM.EYE_BUFFER,
-            XRTM.TYPE,
-            XRTM.RENDER_TIMING,
-            XRTM.S_TRACE
+            CSV("number", int, None),
+            CSV("time_stamp_in_micro_s", int, None, -1),
+            CSV("size", int, None),
+            CSV("user_id", int, None),
+            CSV("buffer", int, None),
+            CSV("delay", int, None),
+            CSV("render_timing", int),
+            CSV("number_in_unit", int, None),
+            CSV("last_in_unit", bool, lambda b: 1 if b else 0),
+            CSV("type", SliceType.parse, SliceType.serialize),
+            CSV("importance", int, None, -1),
+            CSV("index", int, None),
+            CSV("s_trace")
     ]
     
     def is_fragment(self) ->  bool:
-        return not (self.number_in_slice == 0 and self.last_in_slice)
+        return not (self.number_in_unit == 0 and self.last_in_unit)
 
     @classmethod
     def from_strace(cls, s:STraceTx, **kwargs) -> 'PTraceTx':
         p = cls(kwargs)
         p.importance = s.importance
         p.render_timing = s.render_timing
-        p.eye_buffer = s.eye_buffer
+        p.buffer = s.buffer
         p.type = s.type
         p.time_stamp_in_micro_s = s.time_stamp_in_micro_s
         return p
@@ -822,7 +744,6 @@ class Frame:
         self.cu_count = cfg.get_cu_per_frame()
         self.cu_size = cfg.cu_size
 
-        self.frame_idx = vtrace.encode_order
         self.intra_mean = vtrace.get_intra_mean(self.cu_count)
         self.inter_mean = vtrace.get_inter_mean(self.cu_count)
         self.i_qp = vtrace.i_qp
@@ -886,14 +807,14 @@ class Frame:
                     cu.reference = rpl[0]
                     cu.size = 1
                 elif cu.mode != CU_mode.INTRA:
-                    cu.qp = p_qp
+                    cu.qpnew = p_qp
                     cu.psnr_y = p_y_psnr
                     cu.psnr_yuv = p_yuv_psnr
                     cu.reference = rpl[0]
                     cu.size = math.ceil(random.gauss(self.inter_mean, self.inter_mean * 0.2) * p_qp_factor / 8)
                 else:
                     assert cu.mode == CU_mode.INTRA
-                    cu.qp = i_qp
+                    cu.qpnew = i_qp
                     cu.psnr_y = i_y_psnr
                     cu.psnr_yuv = i_yuv_psnr
                     cu.reference = None

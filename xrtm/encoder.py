@@ -186,7 +186,9 @@ class BaseEncoder(AbstracEncoder):
                     size = size_new
             
         self.refs.push(frame)
+
         self.frame_idx += 1
+
         if is_perodic_intra:
             self.periodic_intra_slice_idx = (self.periodic_intra_slice_idx + 1) % self.cfg.slices_per_frame
         
@@ -194,6 +196,7 @@ class BaseEncoder(AbstracEncoder):
         for s in frame.slices:
             s.importance = get_importance_index(self.refs, s, self.cfg)
             traces.append(STraceTx.from_slice(s))
+        
         return traces
 
 
@@ -273,7 +276,7 @@ class MultiViewEncoder:
                 slice_delay += self.cfg.get_encoding_delay()
                 s.time_stamp_in_micro_s = round(render_timing + pre_delay + slice_delay)
                 s.index = self.slice_idx
-                s.eye_buffer = buff_idx
+                s.buffer = buff_idx
                 s.frame_file = str(self.frames_dir / frame_file)
                 straces.append(s)
                 self.slice_idx += 1
