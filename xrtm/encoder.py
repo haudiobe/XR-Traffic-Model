@@ -186,7 +186,9 @@ class BaseEncoder(AbstracEncoder):
                     size = size_new
             
         self.refs.push(frame)
+
         self.frame_idx += 1
+
         if is_perodic_intra:
             self.periodic_intra_slice_idx = (self.periodic_intra_slice_idx + 1) % self.cfg.slices_per_frame
         
@@ -194,6 +196,7 @@ class BaseEncoder(AbstracEncoder):
         for s in frame.slices:
             s.importance = get_importance_index(self.refs, s, self.cfg)
             traces.append(STraceTx.from_slice(s))
+        
         return traces
 
 

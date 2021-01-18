@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Iterator, List
 from xrtm.packets import DePacketizer, PTraceTx
-from xrtm.models import XRTM, STraceTx, Frame, Slice, CuMap, CU_mode, CU_status, CU
+from xrtm.models import STraceTx, Frame, Slice, CuMap, CU_mode, CU_status, CU
 
 
 class PacketStream:

@@ -425,7 +425,7 @@ class VTraceTx(CsvRecord):
             CSV("i_v_psnr", int),
             CSV("i_yuv_psnr", int),
             CSV("i_ssim", int),
-            CSV("i_ssim_d_b", int),
+            CSV("i_ssim_db", int),
             CSV("i_total_frame_time_ms", int),
             CSV("p_poc", int),
             CSV("p_qp", int),
@@ -435,7 +435,7 @@ class VTraceTx(CsvRecord):
             CSV("p_v_psnr", int),
             CSV("p_yuv_psnr", int),
             CSV("p_ssim", int),
-            CSV("p_ssim_d_b", int),
+            CSV("p_ssim_db", int),
             CSV("p_total_frame_time_ms", int),
             CSV("intra", float),
             CSV("merge", float),
@@ -744,7 +744,6 @@ class Frame:
         self.cu_count = cfg.get_cu_per_frame()
         self.cu_size = cfg.cu_size
 
-        self.frame_idx = vtrace.encode_order
         self.intra_mean = vtrace.get_intra_mean(self.cu_count)
         self.inter_mean = vtrace.get_inter_mean(self.cu_count)
         self.i_qp = vtrace.i_qp
