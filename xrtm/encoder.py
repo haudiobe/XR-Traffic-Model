@@ -273,7 +273,7 @@ class MultiViewEncoder:
                 slice_delay += self.cfg.get_encoding_delay()
                 s.time_stamp_in_micro_s = round(render_timing + pre_delay + slice_delay)
                 s.index = self.slice_idx
-                s.eye_buffer = buff_idx
+                s.buffer = buff_idx
                 s.frame_file = str(self.frames_dir / frame_file)
                 straces.append(s)
                 self.slice_idx += 1

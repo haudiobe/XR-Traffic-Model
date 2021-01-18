@@ -4,23 +4,23 @@ from math import ceil
 from enum import Enum
 from pathlib import Path
 
-from .models import STraceTx, PTraceTx, PTraceRx, STraceRx, XRTM, CSV, CsvRecord
+from .models import STraceTx, PTraceTx, PTraceRx, STraceRx, CSV, CsvRecord
 
 def pack(i:int, s:STraceTx, mtu=1500, header_size=40) -> Iterable[PTraceTx]:
     seqnum = i
     if mtu <= 0:
         bytes_to_pack = header_size + s.size
-        yield PTraceTx.from_strace(s, size=bytes_to_pack, number=i, number_in_slice=0, last_in_slice=True)
+        yield PTraceTx.from_strace(s, size=bytes_to_pack, number=i, number_in_unit=0, last_in_unit=True)
         return
     fragnum = 0
     max_payload_size = mtu - header_size
     bytes_to_pack = s.size
     while bytes_to_pack > max_payload_size:
-        yield PTraceTx.from_strace(s, size=max_payload_size, number=seqnum, number_in_slice=fragnum, last_in_slice=False)
+        yield PTraceTx.from_strace(s, size=max_payload_size, number=seqnum, number_in_unit=fragnum, last_in_unit=False)
         bytes_to_pack -= max_payload_size
         seqnum += 1
         fragnum += 1
-    yield PTraceTx.from_strace(s, size=bytes_to_pack, number=seqnum, number_in_slice=fragnum, last_in_slice=True)
+    yield PTraceTx.from_strace(s, size=bytes_to_pack, number=seqnum, number_in_unit=fragnum, last_in_unit=True)
 
 def unpack(*packets:List[PTraceTx]) -> int:
     """
@@ -30,14 +30,12 @@ def unpack(*packets:List[PTraceTx]) -> int:
     if len(packets) == 1:
         return p.index
     user_id = p.user_id
-    view_idx = p.eye_buffer
-    index = p.index
+    view_idx = p.buffer
     for _, p in enumerate(sorted(packets, key=lambda x: x.fragnum)):
         if p.is_last:
             assert p.fragnum == len(packets)-1
         assert user_id == p.user_id
         assert view_idx == p.view_idx
-        assert slice_idx == p.slice_idx
 
 
 class Packetizer:
@@ -57,7 +55,7 @@ class Packetizer:
                 p.render_timing = s.render_timing
                 p.time_stamp_in_micro_s = s.time_stamp_in_micro_s
                 p.type = s.type
-                p.eye_buffer = s.eye_buffer
+                p.buffer = s.buffer
                 p.s_trace = None
                 yield p
 
@@ -90,9 +88,9 @@ class JitterBuffer:
             if len(slice_packets) == 1 and not slice_packets[0].is_fragment():
                 yield idx, slice_packets[0].delay
             else:
-                packets = sorted(slice_packets, key=lambda x: x.number_in_slice)
+                packets = sorted(slice_packets, key=lambda x: x.number_in_unit)
                 p = packets[-1]
-                if p.last_in_slice and p.number_in_slice == len(packets)-1:
+                if p.last_in_unit and p.number_in_unit == len(packets)-1:
                     yield idx, p.delay
 
 
@@ -104,12 +102,12 @@ class StereoJitterBuffer:
 
     # TODO: should receive PTraceRx
     def append(self, p:PTraceTx):
-        if p.eye_buffer == 1:
+        if p.buffer == 1:
             self.left_buffer.append(p)
-        elif p.eye_buffer == 2:
+        elif p.buffer == 2:
             self.right_buffer.append(p)
         else:
-            raise ValueError(f'invalid eye buffer {p.eye_buffer}')
+            raise ValueError(f'invalid eye buffer {p.buffer}')
 
     def delete(self, slice_idx:int):
         # TODO: needs improvements as deleting from both buffers raises a KeyError
