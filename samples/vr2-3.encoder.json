@@ -18,7 +18,7 @@
     },
     "ErrorResilience": {
         "mode": "pIntra",
-        "parameter": "2"
+        "parameter": "1"
     },
     "Slice": {
         "mode": "fixed",
