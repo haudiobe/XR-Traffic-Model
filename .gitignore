@@ -5,3 +5,5 @@ __ignore__/
 *.pyc
 *.xlsx
 __pycache__/
+*.png
+*].json
