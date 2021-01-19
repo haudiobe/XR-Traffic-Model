@@ -159,8 +159,10 @@ class BaseEncoder(AbstracEncoder):
                             refresh = (frame.inter_mean * delta) > (frame.intra_mean * frame.cu_per_slice)
                 if refresh:
                     S.slice_type = SliceType.IDR
-                    frame.draw(address=S.cu_address, count=S.cu_count, intra_refresh=True)
-            
+        
+            if S.slice_type == SliceType.IDR and not is_intra_frame:
+                frame.draw(address=S.cu_address, count=S.cu_count, intra_refresh=True)
+        
         # encode CU map, computes the frame size in bytes
         if self.rc.mode == RC_mode.VBR:
             if self.rc.target_qp < 0:
@@ -182,6 +184,7 @@ class BaseEncoder(AbstracEncoder):
                 for i_qp, p_qp in self.rc.iter_qp_adjustments(frame, step=-1):
                     size_new = frame.encode(self.refs, i_qp=i_qp, p_qp=p_qp) * 8
                     if size_new > budget:
+                        size = frame.encode(self.refs, i_qp=(i_qp+1), p_qp=(p_qp+1)) * 8
                         break
                     size = size_new
             
