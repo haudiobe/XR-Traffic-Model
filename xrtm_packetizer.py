@@ -80,12 +80,11 @@ if __name__ == "__main__":
         source = cfg.get_strace_source(args.user_id)
         seqnum = 0
         prev_pckt_timestamp = 0
-        for trace in STraceTx.iter_csv_file(source):
-            rate_delay = 0
-            for p in pack.process([trace], seqnum):
+        for s_trace in STraceTx.iter_csv_file(source):
+            for p in pack.process([s_trace], seqnum):
                 p.s_trace = str(source)
-                p.time_stamp_in_micro_s = round(max(p.time_stamp_in_micro_s, prev_pckt_timestamp) + rate_delay)
+                rate_delay = 8e6 * p.size / cfg.bitrate
+                p.time_stamp_in_micro_s = round(max(s_trace.time_stamp_in_micro_s, prev_pckt_timestamp) + rate_delay)
                 prev_pckt_timestamp = p.time_stamp_in_micro_s
                 writer.writerow(p.get_csv_dict())
-                rate_delay += 8e6 * p.size / cfg.bitrate
                 seqnum += 1
