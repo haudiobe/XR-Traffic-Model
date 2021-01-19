@@ -81,24 +81,37 @@ def plot_size_distribution(axf, axs , data):
     axs.set_ylabel('density')
     axs.set_title('slice size distribution')
 
-def plot_qp(axs, data):
-    axs.hist([cu.qpnew for cu in data], density=True, bins='auto', **hstyle)
+def plot_qp(axs, data, frames_dir):
+    frames = {}
+    for s in data:
+        if s.frame_file in frames:
+            continue
+        frames[s.frame_file] = s.time_stamp_in_micro_s
+    tq = sorted(
+        [(timestamp * 1e-6, avg_frame_qp(Path(frame_file))) for frame_file, timestamp in frames.items()],
+        key=lambda xy: xy[0]
+    )
+    ts, qp = zip(*tq)
+    axs.plot(ts, qp)
     axs.grid(**gstyle)
-    axs.set_xlabel('QP')
-    axs.set_ylabel('density')
-    axs.set_title('QP distribution')
+    axs.set_xlabel('time (s)')
+    axs.set_ylabel('QP')
+    axs.set_title('QP over time')
 
-def plot_frame(fp):
-    fig, axs = plt.subplots()
-    fig.suptitle(f'{fp.parent}/{fp.stem}{fp.suffix}')
-    plot_qp(axs, data=CU.iter_csv_file(fp))
-    return fig
+def avg_frame_qp(fp:Path):
+    qp = []
+    for cu in CU.iter_csv_file(fp):
+        if cu.qpnew != None:
+            qp.append(cu.qpnew)
+    return sum(qp)/len(qp)
 
 def plot_strace(fp):
     fig, axs = plt.subplots(3, constrained_layout=True)
     fig.suptitle(f'{fp.parent}/{fp.stem}{fp.suffix}')
     plot_bitrate(axs[0], data=STraceTx.iter_csv_file(fp), interval=1e5)
     plot_size_distribution(axs[1], axs[2], data=STraceTx.iter_csv_file(fp))
+    # frames_dir = fp.resolve().parent / f'{fp.stem}.frames'
+    # plot_qp(axs[3], STraceTx.iter_csv_file(fp), frames_dir)
     return fig
 
 def plot_ptrace(fp):
@@ -114,7 +127,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='XRTM Packetizer')
     parser.add_argument('-s', '--s_trace', type=str, help='S-trace file', required=False)
     parser.add_argument('-p', '--p_trace', type=str, help='P-trace file', required=False)
-    parser.add_argument('-f', '--frame_file', type=str, help='plot frame file', required=False)
     parser.add_argument('-n', '--no_show', action='store_true', help='don\'t show figure, save png', required=False)
 
     args = parser.parse_args()
@@ -128,12 +140,6 @@ if __name__ == "__main__":
     elif args.p_trace != None:
         p = Path(args.p_trace)
         fig = plot_ptrace(p)
-        png = p.resolve().parent / f'{p.name}.png'
-        fig.savefig(png)
-
-    elif args.frame_file != None:
-        p = Path(args.frame_file)
-        fig = plot_frame(p)
         png = p.resolve().parent / f'{p.name}.png'
         fig.savefig(png)
 
