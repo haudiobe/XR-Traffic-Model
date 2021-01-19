@@ -253,6 +253,18 @@ def parse_list(cls=str, separator=",") -> Callable:
 def serialize_list(l:List[Any], separator=",") -> str:
     return str(separator).join([str(i) for i in l])
 
+def parse_and_scale(div=100):
+    return lambda x: None if x in ['None', ''] else float(x) / div
+
+def scale_and_serialize(mul=100):
+    return lambda x: x if x == None else str(int(x*mul))
+
+parse_and_scale_100 = parse_and_scale(100)
+scale_and_serialize_100 = scale_and_serialize(100)
+parse_and_scale_1000 = parse_and_scale(1000)
+scale_and_serialize_1000 = scale_and_serialize(1000)
+    
+
 class CSV:
 
     def __init__(self, name:str, parse:Callable=None, serialize:Callable=None, default:Any=None):
@@ -373,14 +385,14 @@ class CuMap:
 
     @classmethod
     def draw_ctus(cls, count:int, weights:List[float]) -> List['CU']:
-        return random.choices(
-            [CU(CU_mode.INTRA), CU(CU_mode.INTER), CU(CU_mode.SKIP), CU(CU_mode.MERGE)], 
+        return [CU({'mode':m}) for m in random.choices( 
+            [CU_mode.INTRA, CU_mode.INTER, CU_mode.SKIP, CU_mode.MERGE], 
             weights=weights, 
-            k=count)
+            k=count)]
 
     @classmethod
     def draw_intra_ctus(cls, count:int) -> List['CU']:
-        return [CU(CU_mode.INTRA)] * count
+        return [CU({'mode':CU_mode.INTRA}) for i in range(count)]
 
     def draw(self, *args, **kwargs):
         self._map = self.draw_ctus(*args, **kwargs)
@@ -416,58 +428,30 @@ class VTraceTx(CsvRecord):
     attributes = [
             CSV("time_stamp_in_micro_s", int, None, -1),
             CSV("encode_order", int),
-            CSV("i_qp", int),
+            CSV("i_qp", parse_and_scale_100, scale_and_serialize_100),
             CSV("i_bits", int),
-            CSV("i_y_psnr", int),
-            CSV("i_u_psnr", int),
-            CSV("i_v_psnr", int),
-            CSV("i_yuv_psnr", int),
+            CSV("i_y_psnr", parse_and_scale_1000, scale_and_serialize_1000),
+            CSV("i_u_psnr", parse_and_scale_1000, scale_and_serialize_1000),
+            CSV("i_v_psnr", parse_and_scale_1000, scale_and_serialize_1000),
+            CSV("i_yuv_psnr", parse_and_scale_1000, scale_and_serialize_1000),
             CSV("i_ssim", int),
             CSV("i_ssim_db", int),
             CSV("i_total_frame_time_ms", int),
             CSV("p_poc", int),
-            CSV("p_qp", int),
+            CSV("p_qp", parse_and_scale_100, scale_and_serialize_100),
             CSV("p_bits", int),
-            CSV("p_y_psnr", int),
-            CSV("p_u_psnr", int),
-            CSV("p_v_psnr", int),
-            CSV("p_yuv_psnr", int),
+            CSV("p_y_psnr", parse_and_scale_1000, scale_and_serialize_1000),
+            CSV("p_u_psnr", parse_and_scale_1000, scale_and_serialize_1000),
+            CSV("p_v_psnr", parse_and_scale_1000, scale_and_serialize_1000),
+            CSV("p_yuv_psnr", parse_and_scale_1000, scale_and_serialize_1000),
             CSV("p_ssim", int),
             CSV("p_ssim_db", int),
             CSV("p_total_frame_time_ms", int),
-            CSV("intra", float),
-            CSV("merge", float),
-            CSV("skip", float),
-            CSV("inter", float)
+            CSV("intra", parse_and_scale_100, scale_and_serialize_100),
+            CSV("merge", parse_and_scale_100, scale_and_serialize_100),
+            CSV("skip", parse_and_scale_100, scale_and_serialize_100),
+            CSV("inter", parse_and_scale_100, scale_and_serialize_100)
     ]
-
-    def __init__(self, data=None):
-
-        super().__init__(data)
-        
-        for k in [
-            'i_qp',
-            'p_qp',
-            'intra',
-            'inter',
-            'skip',
-            'merge'
-        ]:
-            v = getattr(self, k) / 100
-            setattr(self, k, v)
-
-        for k in [
-            'i_y_psnr',
-            'i_u_psnr',
-            'i_v_psnr',
-            'i_yuv_psnr',
-            'p_y_psnr',
-            'p_u_psnr',
-            'p_v_psnr',
-            'p_yuv_psnr'
-        ]:
-            v = getattr(self, k) / 1000
-            setattr(self, k, v)
 
     def get_intra_mean(self, cu_count):
        return self.i_bits / cu_count
@@ -576,18 +560,11 @@ class CU(CsvRecord):
         CSV("address", int), # Address of CU in frame.
         CSV("size", int), # Slice size in bytes.
         CSV("mode", CU_mode.parse, CU_mode.serialize, None), # The mode of the CU 1=intra, 2=merge, 3=skip, 4=inter
-        CSV("reference", lambda r: None if r=='None' else int(r)), # The reference frame of the CU 0 n/a, 1=previous, 2=2 in past, etc.
-        CSV("qpnew", int), # the QP decided for the CU
-        CSV("psnr_y", int), # the estimated Y-PSNR for the CU in db multiplied by 1000
-        CSV("psnr_yuv", int) # the estimated weighted YUV-PSNR for the CU db multiplied by 1000
+        CSV("reference", lambda x: None if x == 'None' else int(x)), # The reference frame of the CU 0 n/a, 1=previous, 2=2 in past, etc.
+        CSV("qpnew", parse_and_scale_100, scale_and_serialize_100, None), # the QP decided for the CU
+        CSV("psnr_y", parse_and_scale_1000, scale_and_serialize_1000), # the estimated Y-PSNR for the CU in db multiplied by 1000
+        CSV("psnr_yuv", parse_and_scale_1000, scale_and_serialize_1000) # the estimated weighted YUV-PSNR for the CU db multiplied by 1000
     ]
-
-    def __init__(self, mode=CU_mode.UNDEFINED, size=-1, ref:List[int]=[], address=-1):
-        self.mode = mode
-        self.size = size
-        self.reference = ref
-        self.address = address
-
 
 class PTraceTx(CsvRecord):
     
