@@ -16,10 +16,11 @@ def pack(i:int, s:STraceTx, mtu=1500, header_size=40) -> Iterable[PTraceTx]:
     max_payload_size = mtu - header_size
     bytes_to_pack = s.size
     while bytes_to_pack > max_payload_size:
-        yield PTraceTx.from_strace(s, size=max_payload_size, number=seqnum, number_in_unit=fragnum, last_in_unit=False)
+        yield PTraceTx.from_strace(s, size=mtu, number=seqnum, number_in_unit=fragnum, last_in_unit=False)
         bytes_to_pack -= max_payload_size
         seqnum += 1
         fragnum += 1
+    bytes_to_pack += header_size
     yield PTraceTx.from_strace(s, size=bytes_to_pack, number=seqnum, number_in_unit=fragnum, last_in_unit=True)
 
 def unpack(*packets:List[PTraceTx]) -> int:
