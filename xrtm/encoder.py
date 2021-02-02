@@ -163,33 +163,18 @@ class BaseEncoder(AbstracEncoder):
             if S.slice_type == SliceType.IDR and not is_intra_frame:
                 frame.draw(address=S.cu_address, count=S.cu_count, intra_refresh=True)
         
-        # encode CU map, computes the frame size in bytes
+        # encode CU map, no bitrate constraints
         if self.rc.mode == RC_mode.VBR:
             if self.rc.target_qp < 0:
                 size = frame.encode(self.refs) * 8
             else:
                 size = frame.encode(self.refs, i_qp=self.rc.target_qp, p_qp=self.rc.target_qp) * 8
-        else:
-            size = frame.encode(self.refs) * 8
-            budget = self.rc.get_frame_budget()
-            # print(f'initial size:{size} - budget:{budget}')
+        else: # with bitrate constraints [cVBR, CBR]
+            i_qp, p_qp = self.rc.estimate_qp(frame)
+            size = frame.encode(self.refs, i_qp=i_qp, p_qp=p_qp) * 8
+            self.rc.add_frame_bits(size)
 
-            if self.rc.mode in [RC_mode.cVBR, RC_mode.CBR] and (size > budget):
-                for i_qp, p_qp in self.rc.iter_qp_adjustments(frame, step=1):
-                    size = frame.encode(self.refs, i_qp=i_qp, p_qp=p_qp) * 8
-                    if size <= budget:
-                        break
-
-            elif self.rc.mode == RC_mode.CBR and (size < budget):
-                for i_qp, p_qp in self.rc.iter_qp_adjustments(frame, step=-1):
-                    size_new = frame.encode(self.refs, i_qp=i_qp, p_qp=p_qp) * 8
-                    if size_new > budget:
-                        size = frame.encode(self.refs, i_qp=(i_qp+1), p_qp=(p_qp+1)) * 8
-                        break
-                    size = size_new
-            
         self.refs.push(frame)
-
         self.frame_idx += 1
 
         if is_perodic_intra:
@@ -229,6 +214,11 @@ class VTraceIterator:
         i = 0
         while i < count:
             idx = (start_frame + i) % size
+            if idx == 0:
+                # skip V-trace #0 which has irrelevant QP 
+                i += 1
+                count += 1
+                idx = (start_frame + i) % size
             yield vtraces[idx]
             i += 1
         
@@ -239,13 +229,18 @@ class MultiViewEncoder:
         self.cfg = cfg
         self.user_idx = user_idx
         self.frame_idx = 0
-        self.rc = RateControl(self.cfg)
-        self.buffers = [ BaseEncoder(cfg, self.rc, user_idx, view_idx) for view_idx, buff in enumerate(self.cfg.buffers) ]
+        self.rc = []
+        self.buffers = []
+        for view_idx, _ in enumerate(self.cfg.buffers):
+            rctl = RateControl(cfg)
+            self.rc.append(rctl)
+            enc = BaseEncoder(cfg, rctl, user_idx, view_idx)
+            self.buffers.append(enc)
         self.frame_idx = 0
         self.frame_duration = cfg.get_frame_duration()
         self.slice_idx = 0
         self.frames_dir = self.cfg.get_frames_dir(user_idx, mkdir=True, overwrite=True)
-
+    
     def process(self, vtraces:List[VTraceTx], feedback:List[Feedback]=None) -> List[STraceTx]:
         """
         call process(vtraces, feedback) to encode all buffers. a frame file is saved for each buffer.

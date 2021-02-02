@@ -32,7 +32,7 @@ class PacketizerConfig:
 
         _requires("Packet", data, "invalid config. no Packet definition")
         packet = data["Packet"]
-        cfg.pckt_max_size = int(packet.get("maxSize", 1500)) # bytes
+        cfg.pckt_max_size = int(packet.get("maxSize", 1500)) # bytes, negative value means unrestricted
         cfg.pckt_overhead = int(packet.get("overhead", 40))
 
         cfg.bitrate = int(data.get("Bitrate", 45000000)) # bits/s

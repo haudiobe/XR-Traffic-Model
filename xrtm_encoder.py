@@ -48,3 +48,4 @@ if __name__ == '__main__':
         for traces in VTraceIterator(cfg):
             for s in encoder.process(traces, feedback=[]):
                 writer.writerow(s.get_csv_dict())
+    
