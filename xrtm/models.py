@@ -53,12 +53,12 @@ class Delay:
         
         if self.mode == self.EQUALLY:
             return random.uniform(self.parameter1, self.parameter2)
-
-        if self.mode == self.GAUSSIANTRUNC:
-            mean, std = self.parameter1, self.parameter2
-            lower, upper = mean - self.parameter3, mean + self.parameter3
-            a, b = (lower - mean) / std, (upper - mean) / std
-            return stats.truncnorm( a, b, loc=mean, scale=std).rvs()
+        
+        # if self.mode == self.GAUSSIANTRUNC:
+        #     mean, std = self.parameter1, self.parameter2
+        #     lower, upper = mean - self.parameter3, mean + self.parameter3
+        #     a, b = (lower - mean) / std, (upper - mean) / std
+        #     return stats.truncnorm( a, b, loc=mean, scale=std).rvs()
 
 class EncodingDelay(Delay):
     
@@ -158,14 +158,14 @@ class EncoderConfig:
             cfg.rc_mode = RC_mode.cVBR
             _requires("bitrate", rc, "cVBR requires an explicit bitrate")
             cfg.rc_bitrate = int(rc["bitrate"]) # bits/s
-            cfg.rc_window_size = int(rc.get("window_size", 1)) # frames
+            cfg.rc_window_size = int(rc.get("window_framerate", 1)) # frames
             cfg.rc_qp_min = int(rc.get("QPmin", -1)) # default: -1
             cfg.rc_qp_max = int(rc.get("QPmax", -1)) # optional
         elif rc["mode"] == "CBR":
             cfg.rc_mode = RC_mode.CBR
             _requires("bitrate", rc, "CBR requires an explicit bitrate")
             cfg.rc_bitrate = int(rc["bitrate"])
-            cfg.rc_window_size = int(rc.get("window_size", 1))
+            cfg.rc_window_size = int(rc.get("window_framerate", 1))
             cfg.rc_qp_min = int(rc.get("QPmin", -1))
             cfg.rc_qp_max = int(rc.get("QPmax", -1))
         elif rc["mode"] == "fVBR":
@@ -578,7 +578,7 @@ class PTraceTx(CsvRecord):
             CSV("render_timing", int),
             CSV("number_in_unit", int, None),
             CSV("last_in_unit", bool, lambda b: 1 if b else 0),
-            CSV("type", SliceType.parse, SliceType.serialize),
+            CSV("type", SliceType.parse, SliceType.serialize, None),
             CSV("importance", int, None, -1),
             CSV("index", int, None),
             CSV("s_trace")
@@ -598,14 +598,31 @@ class PTraceTx(CsvRecord):
         return p
 
 
-class PTraceRx(PTraceTx):
-    """
-    TODO: implement P'Trace
-    """
-    pass
+class PTraceRx(CsvRecord):
+    attributes = [
+        *PTraceTx.attributes,
+        CSV("inter_arrival_micro_s", int),
+    ]
 
 
 #################################################################################################################################
+
+class RCtrace(CsvRecord):
+    attributes = [
+        CSV("window_bits", float),
+        CSV("window_rate", float),
+        CSV("i_qp", float),
+        CSV("i_mean", float),
+        CSV("i_yuv_psnr", float),
+        CSV("p_qp", float),
+        CSV("p_mean", float),
+        CSV("p_yuv_psnr", float),
+
+        CSV("intra", float),
+        CSV("inter", float),
+        CSV("merge", float),
+        CSV("skip", float)
+    ]
 
 class RC_mode(Enum):
     VBR = 0
@@ -617,21 +634,44 @@ class RateControl:
 
     def __init__(self, cfg:EncoderConfig):
         self.mode = cfg.rc_mode
-        
-        # for now, assuming bitrate is split equally between all buffers 
         self.bitrate = cfg.rc_bitrate
         self.frame_rate = cfg.frame_rate
-        self.window_duration = cfg.rc_window_size * cfg.get_frame_duration()
-        self._buffer_count = len(cfg.buffers)
-        self._target_buffer_bitrate = self.bitrate / self._buffer_count
-        self._window = []
-
         self.target_qp = cfg.rc_target_qp
-        self.qp_min = cfg.rc_qp_min
-        self.qp_max = cfg.rc_qp_max
-    
-    def get_frame_budget(self) -> int: # bits
-        return self._target_buffer_bitrate / self.frame_rate
+        self.qp_min = max(0, cfg.rc_qp_min)
+        self.qp_max = min(51, cfg.rc_qp_max)
+        self._buffer_count = len(cfg.buffers)
+        self._frame_bits_ref = (self.bitrate / self._buffer_count) / self.frame_rate
+        self._w = []
+        self._log = []
+        self._factor = 2
+        self._w_count_max = cfg.rc_window_size
+
+    @property
+    def _w_bits(self):
+        return sum(self._w)
+
+    @property
+    def _w_count(self):
+        return min(len(self._w)+1, self._w_count_max)
+
+    def get_frame_budget(self) -> int:
+        """
+        available_bits = (self._frame_bits_ref * self._w_count) - self._w_bits
+        offset = (available_bits - self._frame_bits_ref) / (self._w_count_max / self._factor)
+        return self._frame_bits_ref + offset
+        """
+        overflow = self._w_count_max * self._frame_bits_ref - sum(self._w[1:])
+        bits = self._frame_bits_ref
+        if len(self._w) > 0:
+            available = (self._frame_bits_ref * len(self._w) - sum(self._w)) / len(self._w)
+            offset = available * self._factor * len(self._w) / self._w_count_max
+            bits += offset
+        return min(bits, overflow)
+
+    def no_overflow(self, bits) -> bool:
+        r = sum(self._w[1:]) + bits
+        r /= (self._w_count_max * self._frame_bits_ref)
+        return r < 1
     
     def _clamp_qp(self, qp):
         if self.qp_min != -1 and qp < self.qp_min:
@@ -640,20 +680,62 @@ class RateControl:
             return self.qp_max, True
         return qp, False
 
+    def weighted_qp(self, frame:'Frame', offset=0):
+        i_qp = frame.i_qp + offset
+        p_qp = frame.p_qp + offset
+        vt = frame._vtrace
+        return (i_qp*vt.intra + p_qp*(1-vt.intra))
+
     def iter_qp_adjustments(self, frame:'Frame', step=1):
         assert self.mode in [RC_mode.cVBR, RC_mode.CBR]
         i_qp_new = frame.i_qp + step
         p_qp_new = frame.p_qp + step
+        # offset = step
         while True:
             i_qp_new, i_clamped = self._clamp_qp(i_qp_new)
             p_qp_new, p_clamped = self._clamp_qp(p_qp_new)
             yield i_qp_new, p_qp_new
+            # qp, clamped = self._clamp_qp(self.weighted_qp(frame, offset))
+            # offset += step
+            # yield qp, qp
             if i_clamped and p_clamped:
                 print('target QP range exceeded')
                 return
             i_qp_new += step
             p_qp_new += step
+    
+    def estimate_qp(self, frame:'Frame'):
+        # qp_init = self.weighted_qp(frame, 0)
+        # size = frame.predict_frame_bits(qp_init, qp_init)
+        size = frame.predict_frame_bits()
+        budget = self.get_frame_budget()
+        i_qp, p_qp = frame.i_qp, frame.p_qp
+            
+        if self.mode == RC_mode.cVBR and (size <= budget):
+            return i_qp, p_qp
         
+        elif self.mode == RC_mode.CBR and (size <= budget):
+            for i, p in self.iter_qp_adjustments(frame, step=-1):
+                size = frame.predict_frame_bits(i_qp=i, p_qp=p)
+                if size <= budget:
+                    i_qp, p_qp = i, p
+                else:
+                    break
+            return i_qp, p_qp
+
+        elif self.mode in [RC_mode.cVBR, RC_mode.CBR] and (size > budget):
+            for i_qp, p_qp in self.iter_qp_adjustments(frame, step=1):
+                size = frame.predict_frame_bits(i_qp=i_qp, p_qp=p_qp)
+                if size <= budget:
+                    return i_qp, p_qp
+
+        assert False, f'RC error {self.mode} | frame:{size} | budget:{budget}'
+
+    def add_frame_bits(self, bits:int):
+        self._w.append(bits)
+        self._w = self._w[-self._w_count_max:]
+
+
 def model_pnsr_adjustment(qp_new, qp_ref, psnr):
     qp_delta = qp_new - qp_ref
     return psnr + qp_delta
@@ -732,6 +814,8 @@ class Frame:
         self.cu_distribution = vtrace.get_cu_distribution()
         self.cu_map = CuMap(self.cu_count)
         self.slices = [Slice(self, slice_idx) for slice_idx in range(self.slices_per_frame)]
+
+        self._vtrace = vtrace
     
     def draw(self, address:int=0, count:int=-1, intra_refresh=False):
         """
@@ -745,6 +829,34 @@ class Frame:
         else:
             cu_list = CuMap.draw_ctus(count, self.cu_distribution)
         self.cu_map.update_slice(address, cu_list)
+
+    def predict_frame_bits(self, i_qp:int=-1, p_qp:int=-1):
+        qp_adjustment = lambda qp, qp_ref : pow(2, (qp_ref - qp)/6)
+        
+        if i_qp > 0:
+            i_qp_factor = qp_adjustment(i_qp, self.i_qp)
+        else:
+            i_qp = self.i_qp
+            i_qp_factor = 1
+
+        if p_qp > 0:
+            p_qp_factor = qp_adjustment(p_qp, self.p_qp)
+        else:
+            p_qp = self.p_qp
+            p_qp_factor = 1
+
+        frame_size = 0
+        for s in self.slices:
+            for cu in self.cu_map.get_slice(s.cu_address, s.cu_count):
+                if cu.mode == CU_mode.SKIP:
+                    frame_size += 1
+                elif cu.mode != CU_mode.INTRA:
+                    frame_size += math.ceil(random.gauss(self.inter_mean, self.inter_mean * 0.2) * p_qp_factor / 8)
+                else:
+                    assert cu.mode == CU_mode.INTRA
+                    frame_size += math.ceil(random.gauss(self.intra_mean, self.intra_mean * 0.1) * i_qp_factor / 8)
+        return int(frame_size * 8)
+
 
     def encode(self, refs:'RefPicList', i_qp:int=-1, p_qp:int=-1):
         """
