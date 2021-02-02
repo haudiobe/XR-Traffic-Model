@@ -1,0 +1,12 @@
+{
+    "S-Trace": { 
+        "source": "./samples_results/S-Trace_VR2-1.csv",
+        "startTime": 0
+    },
+    "Packet": {
+        "maxSize": 1500,
+        "overhead": 40
+    },
+    "Bitrate": 45000000,
+    "P-Trace": "./samples_results/P-Trace_VR2-1.csv"
+}

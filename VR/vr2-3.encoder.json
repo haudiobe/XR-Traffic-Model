@@ -11,35 +11,34 @@
     ],
     "Bitrate": {
         "mode": "CBR",
-        "bitrate": "10000000",
-        "window_framerate": "1",
-        "QPmin": 10,
-        "QPmax": 25
+        "bitrate": 30000000,
+        "window_framerate": 1,
+        "QPmin": 0,
+        "QPmax": 51
     },
     "ErrorResilience": {
         "mode": "pIntra",
-        "parameter": "2"
+        "parameter": 1
     },
     "Slice": {
         "mode": "fixed",
-        "parameter": "8"
+        "parameter": 8
     },
     "PreDelay": {
             "mode": "equally",
-            "parameter1": "10",
-            "parameter2": "30"
+            "parameter1": 10,
+            "parameter2": 30
     },
     "EncodingDelay": {
             "mode": "GaussianTrunc",
-            "parameter1": "8",
-            "parameter2": "3",
-            "parameter3": "1"
+            "parameter1": 8,
+            "parameter2": 3
     },
     "frame_width": 2048,
     "frame_height": 2048,
     "frame_rate": 60,
-    "start_frame": 1,
-    "total_frames": 60,
-    "buffer_interleaving": true,
-    "S-Trace": "./samples_results/S-Trace.csv"
+    "start_frame": 0,
+    "total_frames": 3600,
+    "buffer_interleaving": false,
+    "S-Trace": "./samples_results/S-Trace_VR2-3.csv"
 }

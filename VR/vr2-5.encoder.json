@@ -1,0 +1,43 @@
+{
+    "Buffers": [
+        {
+            "V-Trace": "./samples/V-Trace-left.csv",
+            "buffer": "left"
+        },
+        {
+            "V-Trace": "./samples/V-Trace-right.csv",
+            "buffer": "right"
+        }
+    ],
+    "Bitrate": {
+        "mode": "cVBR",
+        "bitrate": 30000000,
+        "window_framerate": 12,
+        "QPmin": 0,
+        "QPmax": 51
+    },
+    "ErrorResilience": {
+        "mode": "pIntra",
+        "parameter": 8
+    },
+    "Slice": {
+        "mode": "no"
+    },
+    "PreDelay": {
+            "mode": "equally",
+            "parameter1": 10,
+            "parameter2": 30
+    },
+    "EncodingDelay": {
+            "mode": "GaussianTrunc",
+            "parameter1": 8,
+            "parameter2": 3
+    },
+    "frame_width": 2048,
+    "frame_height": 2048,
+    "frame_rate": 60,
+    "start_frame": 0,
+    "total_frames": 3600,
+    "buffer_interleaving": false,
+    "S-Trace": "./samples_results/S-Trace_VR2-5.csv"
+}
