@@ -198,7 +198,7 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--s_trace', type=str, help='S-trace file', required=False)
     parser.add_argument('-p', '--p_trace', type=str, help='P-trace file', required=False)
     parser.add_argument('-n', '--no_show', action='store_true', help='don\'t show figure, save png', required=False)
-
+    
     args = parser.parse_args()
     noop = True
 
@@ -206,14 +206,14 @@ if __name__ == "__main__":
         p = Path(args.s_trace)
         fig = plot_strace(p)
         png = p.resolve().parent / f'{p.name}.png'
-        fig.savefig(png)
+        fig.savefig(png, dpi=600)
         noop = False
 
     elif args.p_trace != None:
         p = Path(args.p_trace)
         fig = plot_ptrace(p)
         png = p.resolve().parent / f'{p.name}.png'
-        fig.savefig(png)
+        fig.savefig(png, dpi=600)
         noop = False
 
     if noop:
