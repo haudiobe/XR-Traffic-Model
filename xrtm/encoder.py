@@ -114,6 +114,7 @@ class BaseEncoder(AbstracEncoder):
             is_intra_frame = vtrace.is_full_intra
         elif self.cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_INTRA:
             is_perodic_intra = (self.frame_idx % self.cfg.intra_refresh_period) == 0
+            is_intra_frame == is_perodic_intra and (self.cfg.slices_per_frame == 1)
         
         # handle feedback
         if len(feedback) > 0:
@@ -159,7 +160,7 @@ class BaseEncoder(AbstracEncoder):
                             refresh = (frame.inter_mean * delta) > (frame.intra_mean * frame.cu_per_slice)
                 if refresh:
                     S.slice_type = SliceType.IDR
-        
+
             if S.slice_type == SliceType.IDR and not is_intra_frame:
                 frame.draw(address=S.cu_address, count=S.cu_count, intra_refresh=True)
         
@@ -170,7 +171,7 @@ class BaseEncoder(AbstracEncoder):
             else:
                 size = frame.encode(self.refs, i_qp=self.rc.target_qp, p_qp=self.rc.target_qp) * 8
         else: # with bitrate constraints [cVBR, CBR]
-            i_qp, p_qp = self.rc.estimate_qp(frame)
+            i_qp, p_qp = self.rc.estimate_qp(frame, intra=is_intra_frame)
             size = frame.encode(self.refs, i_qp=i_qp, p_qp=p_qp) * 8
             self.rc.add_frame_bits(size)
 

@@ -645,6 +645,13 @@ class RateControl:
         self._log = []
         self._factor = 2
         self._w_count_max = cfg.rc_window_size
+        self.intra_compensation = (
+                cfg.error_resilience_mode == ErrorResilienceMode.PERIODIC_INTRA
+            ) and (
+                cfg.slices_per_frame == 1
+            )
+        self.intra_period = cfg.intra_refresh_period
+        self.intra_compensation_factor = 3 # int(cfg.intra_refresh_period / 4)
 
     @property
     def _w_bits(self):
@@ -654,18 +661,21 @@ class RateControl:
     def _w_count(self):
         return min(len(self._w)+1, self._w_count_max)
 
-    def get_frame_budget(self) -> int:
-        """
-        available_bits = (self._frame_bits_ref * self._w_count) - self._w_bits
-        offset = (available_bits - self._frame_bits_ref) / (self._w_count_max / self._factor)
-        return self._frame_bits_ref + offset
-        """
+    def get_frame_budget(self, intra=False) -> int:
+        if self._w_count_max == 1:
+            return self._frame_bits_ref
         overflow = self._w_count_max * self._frame_bits_ref - sum(self._w[1:])
         bits = self._frame_bits_ref
         if len(self._w) > 0:
-            available = (self._frame_bits_ref * len(self._w) - sum(self._w)) / len(self._w)
-            offset = available * self._factor * len(self._w) / self._w_count_max
-            bits += offset
+            available = self._frame_bits_ref * self._w_count - sum(self._w)
+            if self.intra_compensation and intra:
+                bits = available
+            else:
+                offset = available - self._frame_bits_ref
+                offset /= (self._w_count / self._factor)
+                bits += offset
+            if self.intra_compensation and not intra:
+                bits *= (self.intra_period / ((self.intra_period-1) + self.intra_compensation_factor))
         return min(bits, overflow)
 
     def no_overflow(self, bits) -> bool:
@@ -699,18 +709,18 @@ class RateControl:
             # offset += step
             # yield qp, qp
             if i_clamped and p_clamped:
-                print('target QP range exceeded')
+                print(f'target QP range exceeded - {i_qp_new}, {p_qp_new}')
                 return
             i_qp_new += step
             p_qp_new += step
     
-    def estimate_qp(self, frame:'Frame'):
+    def estimate_qp(self, frame:'Frame', intra=False):
         # qp_init = self.weighted_qp(frame, 0)
         # size = frame.predict_frame_bits(qp_init, qp_init)
         size = frame.predict_frame_bits()
-        budget = self.get_frame_budget()
+        budget = self.get_frame_budget(intra=intra)
         i_qp, p_qp = frame.i_qp, frame.p_qp
-            
+        
         if self.mode == RC_mode.cVBR and (size <= budget):
             return i_qp, p_qp
         
@@ -720,6 +730,7 @@ class RateControl:
                 if size <= budget:
                     i_qp, p_qp = i, p
                 else:
+                    print('### break')
                     break
             return i_qp, p_qp
 
