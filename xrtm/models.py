@@ -42,7 +42,7 @@ class Delay:
     def __init__(self, **params):
         self.mode = str(params.get("mode", "constant")).lower()
         assert self.mode in [self.CONSTANT, self.EQUALLY, self.GAUSSIANTRUNC]
-        # timestamps are expressed in micro seconds
+        # timestamps are expressed in micro seconds, marameters are in milliseconds
         self.parameter1 = float(params.get("parameter1", 0)) * 1e3
         self.parameter2 = float(params.get("parameter2", 0)) * 1e3
         self.parameter3 = float(params.get("parameter3", 0)) * 1e3
@@ -241,6 +241,9 @@ class EncoderConfig:
 
 #################################################################################################################################
 # CSV PARSING
+
+def parse_bool(x):
+    return bool(int(x))
 
 def parse_list(cls=str, separator=",") -> Callable:
     def parse(s):
@@ -547,11 +550,16 @@ class STraceTx(CsvRecord):
         st.frame_file = None
         return st
 
+
 class STraceRx(STraceTx):
-    """
-    TODO: implement S'Trace
-    """
-    pass
+
+    attributes = STraceTx.attributes + [
+        CSV("recovery_position", int)
+    ]
+
+    @classmethod
+    def from_tx(cls, s:STraceTx):
+        return cls(s.__dict__)
 
 
 class CU(CsvRecord):
@@ -577,7 +585,7 @@ class PTraceTx(CsvRecord):
             CSV("delay", int, None),
             CSV("render_timing", int),
             CSV("number_in_unit", int, None),
-            CSV("last_in_unit", bool, lambda b: 1 if b else 0),
+            CSV("last_in_unit", parse_bool, lambda b: 1 if b else 0),
             CSV("type", SliceType.parse, SliceType.serialize, None),
             CSV("importance", int, None, -1),
             CSV("index", int, None),
@@ -596,7 +604,6 @@ class PTraceTx(CsvRecord):
         p.type = s.type
         p.time_stamp_in_micro_s = s.time_stamp_in_micro_s
         return p
-
 
 class PTraceRx(CsvRecord):
     attributes = [
