@@ -176,28 +176,37 @@ class DePacketizer:
         """ a class to process timestamped buckets of incoming PTrace into decodable Strace """
         self.cfg = cfg
         self.buffer = StereoJitterBuffer(cfg)
-        self.strace_data = [*STraceTx.iter_csv_file(cfg.strace_file)]
+        self.strace_data = [*STraceRx.iter_csv_file(cfg.strace_file)]
 
-    def process(self, packets:List[PTraceTx]) -> List[STraceRx]:
+    def process(self, packets:Iterable[PTraceTx]) -> Iterable[STraceRx]:
+
         for p in packets:
             self.buffer.append(p)
-            for slice_idx, pp_sorted in self.buffer.iter_slices():
-                # pp_sorted = assert_sorted(pp_slice)
-                # if self.is_complete_slice(pp_sorted):
-                s = self.strace_data[slice_idx]
-                pp_recovered = [pp for pp in pp_sorted if ((pp.time_stamp_in_micro_s - pp.render_timing) <= self.cfg.delay_budget)]
-                if (len(pp_recovered) < len(pp_sorted)) and (self.cfg.slice_loss_mode == SliceLossMode.NO_RECOVERY):
-                    s.recovery_position = 0
-                    s.time_stamp_in_micro_s = 0
-                elif len(pp_recovered) == 0:
-                    s.recovery_position = 0
-                    s.time_stamp_in_micro_s = 0
-                else:
-                    s.recovery_position = self.get_recovered_bytes(pp_recovered, pp_overhead=40)
-                    s.time_stamp_in_micro_s = self.get_recovered_timestamp(pp_recovered)
-                self.buffer.delete(slice_idx)
-                yield s
+        
+        for slice_idx, pp_sorted in self.buffer.iter_complete_slices():
+        
+            s = self.strace_data[slice_idx]
+            pp_recovered = []
+
+            for pp in pp_sorted:
+                if (pp.time_stamp_in_micro_s > 0) and ((pp.time_stamp_in_micro_s - pp.render_timing) <= self.cfg.delay_budget):
+                    pp_recovered.append(pp)
+
+            if len(pp_recovered) == 0:
+                s.recovery_position = 0
+                s.time_stamp_in_micro_s = 0
+            elif (self.cfg.slice_loss_mode == SliceLossMode.NO_RECOVERY) and (len(pp_recovered) < len(pp_sorted)):
+                s.recovery_position = 0
+                s.time_stamp_in_micro_s = 0
+            else:
+                s.recovery_position = self.get_recovered_bytes(pp_recovered, pp_overhead=40)
+                s.time_stamp_in_micro_s = self.get_recovered_timestamp(pp_recovered)
             
+            assert (type(s.recovery_position) == int) and (s.recovery_position >= 0)
+            yield s
+            self.buffer.delete(slice_idx)
+            
+
     def is_complete_slice(self, pp_sorted):
         for num_in_unit, p in enumerate(pp_sorted):
             if p.number_in_unit != num_in_unit:
@@ -205,7 +214,10 @@ class DePacketizer:
         return p.last_in_unit == 1
     
     def get_recovered_bytes(self, pp_recovered, pp_overhead) -> int:
-        return functools.reduce(lambda x,y: x+(y.size-pp_overhead), pp_recovered, 0 )
+        rec = 0
+        for pp in pp_recovered:
+            rec += pp.size-pp_overhead
+        return rec
 
     def get_recovered_timestamp(self, pp_recovered) -> int:
         return max(map(lambda x: x.time_stamp_in_micro_s, pp_recovered))
@@ -226,11 +238,11 @@ class JitterBuffer:
             self._buffer[p.index].append(p)
         else:
             idx = 0
-            while (p.number_in_unit > self._buffer[p.index][idx]) and (idx < len(self._buffer[p.index])):
+            while (p.number_in_unit > self._buffer[p.index][idx].number_in_unit) and (idx < len(self._buffer[p.index])):
                 idx += 1
             self._buffer[p.index].insert(idx, p)
         p_last = self._buffer[p.index][-1]
-        if p_last.last_in_unit and p_last.number_in_unit == len(self._buffer[p.index]):
+        if p_last.last_in_unit and ((p_last.number_in_unit+1) == len(self._buffer[p.index])):
             self._complete[p.index] = self._buffer.pop(p.index)
 
     def delete(self, idx):
@@ -239,7 +251,7 @@ class JitterBuffer:
         if idx in self._buffer:
             self._buffer.pop(idx)
 
-    def iter_slices(self) -> Iterator[Tuple[int, List[PTraceRx]]]:
+    def iter_complete_slices(self) -> Iterator[Tuple[int, List[PTraceRx]]]:
         for slice_idx, slice_packets in self._complete.copy().items():
             yield slice_idx, slice_packets
 
@@ -261,14 +273,9 @@ class StereoJitterBuffer:
 
     def delete(self, slice_idx:int):
         for buff in self.buffers.values():
-            try:
-                buff.delete(slice_idx)
-                return
-            except AssertionError:
-                pass
-        raise ValueError(f'{slice_idx} is not buffered')
+            buff.delete(slice_idx)
     
-    def iter_slices(self) -> Iterator[Tuple[int, List[PTraceRx]]]:
+    def iter_complete_slices(self) -> Iterator[Tuple[int, List[PTraceRx]]]:
         for buff in self.buffers.values():
-            for slice_idx, slice_packets in buff.iter_slices():
+            for slice_idx, slice_packets in buff.iter_complete_slices():
                 yield slice_idx, slice_packets

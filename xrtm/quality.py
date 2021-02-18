@@ -12,7 +12,8 @@ class QTrace(CsvRecord):
         CSV("duration", int),
         CSV("PLoR", float),
         CSV("PLaR", float),
-        CSV("SLR", float)
+        CSV("SLR", float),
+        # CSV("slice_recovery", float, None, 0)
     ]
     """
         ,
@@ -32,6 +33,7 @@ class QTrace(CsvRecord):
         self.late_packets = 0
         self.total_slices = 0
         self.lost_slices = 0
+        self.slice_recovery = 0
         
 
 class QualEvalCfg:
@@ -73,25 +75,25 @@ def q_eval(max_delay:int, qi:QualEvalInput) -> QTrace:
     q.lost_packets = 0
     q.late_packets = 0
     q.total_packets = 0
-    with open(qi.pp_trace, 'r') as pp_trace:
-        for pp in pp_trace:
-            if pp.time_stamp_in_micro_s <= 0:
-                q.lost_packets += 1
-            elif (pp.render_timing + max_delay) > pp.time_stamp_in_micro_s:
-                q.late_packets += 1
-            q.total_packets += 1
+    for pp in PTraceTx.iter_csv_file(qi.pp_trace):
+        if pp.buffer != q.buffer:
+            continue
+        if pp.time_stamp_in_micro_s <= 0:
+            q.lost_packets += 1
+        elif (pp.render_timing + max_delay) > pp.time_stamp_in_micro_s:
+            q.late_packets += 1
+        q.total_packets += 1
     
     q.lost_slices = 0
     q.total_slices = 0
-    with open(qi.sp_trace, 'r') as sp_trace:
-        for sp in sp_trace:
-            if sp.slice_recovery_position < sp.size:
-                q.lost_slices += 1
-            q.total_slices += 1
-            if t < 0:
-                t = pp.render_timing
-        t = pp.render_timing - t
+    for sp in STraceRx.iter_csv_file(qi.sp_trace):
+        if sp.recovery_position < sp.size:
+            q.lost_slices += 1
+        q.slice_recovery += (sp.recovery_position / sp.size)
+        q.total_slices += 1
     
+    q.slice_recovery /= q.total_slices
+
     q.PLoR = q.lost_packets / q.total_packets
     q.PLaR = q.late_packets / q.total_packets
     q.SLR = q.lost_slices / q.total_slices

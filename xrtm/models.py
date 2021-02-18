@@ -318,14 +318,14 @@ class CsvRecord:
 
     @classmethod
     def iter_csv_file(cls, fp:Path):
-        with open(fp, newline='') as f:
+        with open(fp, 'r', newline='') as f:
             vtrace_reader = csv.DictReader(f)
             for row in vtrace_reader:
                 yield cls.from_csv_row(row)
 
     @classmethod
     def get_csv_writer(cls, f, writeheaders=True):
-        w =  csv.DictWriter(f, fieldnames=cls.get_csv_fieldnames())
+        w = csv.DictWriter(f, fieldnames=cls.get_csv_fieldnames())
         if writeheaders:
             w.writeheader()
         return w
@@ -511,14 +511,10 @@ def validates_cu_distribution(vt:VTraceTx, raise_exception=True) -> bool:
 
 
 class VTraceRx(VTraceTx):
-    """
-    TODO: implement V'Trace
-    """
     pass
 
 
 class STraceTx(CsvRecord):
-
     attributes = [
         CSV("index", int, None),
         CSV("time_stamp_in_micro_s", int, None, -1),
@@ -553,9 +549,16 @@ class STraceTx(CsvRecord):
 
 class STraceRx(STraceTx):
 
-    attributes = STraceTx.attributes + [
-        CSV("recovery_position", int)
+    attributes = [
+        *STraceTx.attributes,
+        CSV("recovery_position", lambda i: -1 if i == None else int(i), None, -1)
     ]
+    def __init__(self, *args, **kwargs):
+        self.attributes = [
+            *STraceTx.attributes,
+            CSV("recovery_position", int, None, -1)
+        ]
+        super(STraceRx, self).__init__( *args, **kwargs)
 
     @classmethod
     def from_tx(cls, s:STraceTx):
@@ -563,7 +566,6 @@ class STraceRx(STraceTx):
 
 
 class CU(CsvRecord):
-    
     attributes = [
         CSV("address", int), # Address of CU in frame.
         CSV("size", int), # Slice size in bytes.
@@ -574,8 +576,8 @@ class CU(CsvRecord):
         CSV("psnr_yuv", parse_and_scale_1000, scale_and_serialize_1000) # the estimated weighted YUV-PSNR for the CU db multiplied by 1000
     ]
 
+
 class PTraceTx(CsvRecord):
-    
     attributes = [
             CSV("number", int, None),
             CSV("time_stamp_in_micro_s", int, None, -1),
@@ -608,8 +610,14 @@ class PTraceTx(CsvRecord):
 class PTraceRx(CsvRecord):
     attributes = [
         *PTraceTx.attributes,
-        CSV("inter_arrival_micro_s", int),
+        CSV("inter_arrival_micro_s", int, int, -1)
     ]
+    def __init__(self, *args, **kwargs):
+        self.attributes = [
+            *PTraceTx.attributes,
+            CSV("inter_arrival_micro_s", int, int, -1)
+        ]
+        super(PTraceRx, self).__init__( *args, **kwargs)
 
 
 #################################################################################################################################

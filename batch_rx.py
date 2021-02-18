@@ -16,8 +16,8 @@ use_cases = [f'vr2-{i}' for i in range(1,9)]
 USERS = [0,1,2,3] # [*range(16)]
 
 def run_process(*args, dry_run=False, **kwargs):
+    print('python3', *args)
     if dry_run:
-        print('python3', *args)
         return
     subprocess.run(['python3', *args])
 
@@ -91,7 +91,7 @@ if __name__ == '__main__':
     testchan_template = {
         "loss_rate" : 0.01,
         "max_delay_ms" : 50,
-        "max_bitrate" : 60,
+        "max_bitrate" : 60000000,
         "P-Trace": p_path,
         "Pp-Trace": pp_path
     }
@@ -101,13 +101,14 @@ if __name__ == '__main__':
         with open(cfg_path, 'w') as fp:
             json.dump(cfg, fp, indent=4)
         run_process('./xrtm_test_channel.py', '-c', str(cfg_path), dry_run=args.dry_run)
+        run_process('./plot.py', '-p', str(cfg["Pp-Trace"]), '-n', dry_run=args.dry_run)
 
     # UNPACK ###################################################################
     unpack_template = {
         "Input": { 
             "Pp-Trace": pp_path,
         },
-        "maxDelay": 60,
+        "maxDelay": 80,
         "sliceLossMode": "partial",
         "Output": [
             {

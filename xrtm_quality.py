@@ -19,16 +19,18 @@ if __name__ == "__main__":
     
     cfg_path = Path(args.config)
     assert cfg_path.exists(), 'config file not found'
+    
+    cfg = None
+    with open(cfg_path, 'r') as cf:
+       cfg = QualEvalCfg.load(cf)
 
-    cfg = QualEvalCfg.load(cfg_path)
-    pack = Packetizer(cfg, user_idx=args.user_id)
-
-    q_all = QTrace()
+    q_all = QTrace({})
 
     with open(cfg.output, 'w') as of:
         writer = QTrace.get_csv_writer(of)
+        ucount = 0
         for qi in cfg.iter_inputs():
-            q_user = q_eval(60, qi)
+            q_user = q_eval(60e3, qi)
             writer.writerow(q_user.get_csv_dict())
 
             q_all.total_packets += q_user.total_packets
@@ -36,9 +38,16 @@ if __name__ == "__main__":
             q_all.late_packets += q_user.late_packets
             q_all.total_slices += q_user.total_slices
             q_all.lost_slices += q_user.lost_slices
+            q_all.slice_recovery += q_user.slice_recovery
             q_all.buffer = -1
             q_all.user = -1
-            q_all.duration = max(q_user, q_all.duration)
-        
+            q_all.duration = max(q_user.duration, q_all.duration)
+            ucount += 1
+
+        q_all.slice_recovery /= ucount
+        q_all.PLoR = q_all.lost_packets / q_all.total_packets
+        q_all.PLaR = q_all.late_packets / q_all.total_packets
+        q_all.SLR = q_all.lost_slices / q_all.total_slices
+
         writer.writerow(q_all.get_csv_dict())
         

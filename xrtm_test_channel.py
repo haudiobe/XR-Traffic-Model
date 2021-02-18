@@ -46,42 +46,35 @@ class TestChan():
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self._debug = False
         self._delay = Delay(mode=Delay.EQUALLY, parameter1=0, parameter2=self.cfg.max_delay_ms)
 
     def apply_delay(self, it) -> Iterable[PTraceTx]:
         for p in it:
             p.delay = round(self._delay.get_delay())
             p.time_stamp_in_micro_s += p.delay
-            if self._debug:
-                print('delay', p.time_stamp_in_micro_s)
+            yield p
+
+    def apply_rate(self, it) -> Iterable[PTraceTx]:
+        prev_pckt_timestamp = 0
+        for p in it:
+            rate_delay = 1e6 * (8 * p.size) / self.cfg.max_bitrate
+            p.time_stamp_in_micro_s = round(max(p.time_stamp_in_micro_s, prev_pckt_timestamp) + rate_delay)
+            prev_pckt_timestamp = p.time_stamp_in_micro_s
             yield p
 
     def apply_loss(self, it) -> Iterable[PTraceTx]:
         for p in it:
             if bernoulli.rvs(p=self.cfg.loss_rate):
                 p.time_stamp_in_micro_s = 0
-            if self._debug:
-                print('loss', p.time_stamp_in_micro_s)
-            yield p
-
-    def apply_rate(self, it) -> Iterable[PTraceTx]:
-        prev_pckt_timestamp = 0
-        for p in it:
-            rate_delay = 8e6 * p.size / self.cfg.max_bitrate
-            p.time_stamp_in_micro_s = round(max(p.time_stamp_in_micro_s, prev_pckt_timestamp) + rate_delay)
-            prev_pckt_timestamp = p.time_stamp_in_micro_s
-            if self._debug:
-                print('rate', p.time_stamp_in_micro_s)
-                print('*'*64)
+                p.delay = -1
             yield p
 
     def process(self, it) -> Iterable[PTraceTx]:
         return compose(
-            self.apply_rate,
             self.apply_loss,
+            self.apply_rate,
             self.apply_delay,
-        )(it)
+        )(it) # <= functions get called in reverse order
 
 
 def main(cfg):
