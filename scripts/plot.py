@@ -19,7 +19,9 @@ def bitrate(data, interval):
 def inter_arrival(data):
     prev = None
     for _, p in enumerate(data):
-        if prev is None:
+        if p.time_stamp_in_micro_s <= 0:
+            continue
+        elif prev is None:
             yield None, p
         else:
             dt =  p.time_stamp_in_micro_s - prev.time_stamp_in_micro_s
@@ -30,6 +32,8 @@ def latency(data):
     tmax = 0
     tmin = 1e9
     for sample in data:
+        if sample.time_stamp_in_micro_s <= 0:
+            continue
         t = (sample.time_stamp_in_micro_s - sample.render_timing)*1e-3
         tmax = max(tmax, t)
         tmin = min(tmin, t)
@@ -206,14 +210,14 @@ if __name__ == "__main__":
         p = Path(args.s_trace)
         fig = plot_strace(p)
         png = p.resolve().parent / f'{p.name}.png'
-        fig.savefig(png, dpi=600)
+        fig.savefig(png, dpi=150)
         noop = False
 
     elif args.p_trace != None:
         p = Path(args.p_trace)
         fig = plot_ptrace(p)
         png = p.resolve().parent / f'{p.name}.png'
-        fig.savefig(png, dpi=600)
+        fig.savefig(png, dpi=150)
         noop = False
 
     if noop:

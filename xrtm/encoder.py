@@ -129,7 +129,7 @@ class BaseEncoder(AbstracEncoder):
                     pass
 
         # draw CU map
-        frame = Frame(vtrace, self.cfg, view_idx=self._view_idx, frame_idx=self.frame_idx)
+        frame = Frame(self.cfg, view_idx=self._view_idx, frame_idx=self.frame_idx, vtrace=vtrace)
         frame.draw(intra_refresh=is_intra_frame)
 
         # slice type decision 
@@ -259,7 +259,7 @@ class MultiViewEncoder:
         pre_delay = self.cfg.get_pre_delay()
         
         for vtrace, enc in zip(vtraces, self.buffers):
-            frame_file = f'{self.frame_idx}_{buff_idx}.csv'
+            frame_file = self.cfg.get_frame_file(self.frame_idx, buff_idx)
             
             if self.cfg.buffer_interleaving:
                 render_timing = round(timestamp + self.cfg.get_buffer_delay(buff_idx))
@@ -279,6 +279,7 @@ class MultiViewEncoder:
                 s.frame_file = str(self.frames_dir / frame_file)
                 straces.append(s)
                 self.slice_idx += 1
+
             enc.dump_frame_file( self.frames_dir / frame_file )
             buff_idx += 1
 

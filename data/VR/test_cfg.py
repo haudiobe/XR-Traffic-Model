@@ -1,5 +1,5 @@
 from xrtm.models import EncoderConfig, RC_mode, ErrorResilienceMode
-from xrtm_packetizer import PacketizerConfig
+from xrtm_packetizer import PacketizerCfg
 from pathlib import Path
 
 def assert_encoder_common(cfg:EncoderConfig):
@@ -48,16 +48,16 @@ def assert_buffer_interleaving(bint):
     return check
 
 
-def assert_packetizer_common(cfg:PacketizerConfig):
+def assert_packetizer_common(cfg:PacketizerCfg):
     pass
 
 def assert_pckt_bitrate(bps):
-    def check(cfg:PacketizerConfig):
+    def check(cfg:PacketizerCfg):
         assert cfg.bitrate == bps
     return check
 
 def assert_mtu(max_size, overhead):
-    def check(cfg:PacketizerConfig):
+    def check(cfg:PacketizerCfg):
         assert cfg.pckt_max_size == max_size
         assert cfg.pckt_overhead == overhead
     return check

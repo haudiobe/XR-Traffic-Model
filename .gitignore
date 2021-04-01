@@ -7,3 +7,12 @@ __ignore__/
 __pycache__/
 *.png
 *].json
+extra/
+samples_results/
+.dockerignore
+.vscode
+.pytest_cache
+VR/run/
+.ignore/
+data/rx/
+data/tx/
