@@ -50,13 +50,22 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Decoder configuration')
     parser.add_argument('-c', '--config', type=str, help='config file', required=True)
+    parser.add_argument('-s', '--strace-dir', type=str, help='s-trace directory', required=False, default=None)
     
     args = parser.parse_args()
     
     cfg_path = Path(args.config)
     assert cfg_path.exists(), "config file not found"
-
+    print(cfg_path)
+    
     cfg = DePacketizerCfg.load(cfg_path)
+    if args.strace_dir != None:
+        strace_dir = Path(args.strace_dir)
+        assert strace_dir.exists() and strace_dir.is_dir(), "'--strace-dir' - not an existing directory"
+        cfg.strace_file = strace_dir / cfg.strace_file.name
+        assert cfg.strace_file.exists(), "could not find S-Trace referenced by P-Trace, after applying --strace-dir"
+    else:
+        assert cfg.strace_file.exists(), "could not find S-Trace referenced by P-Trace, try using --strace-dir"
     unpack = DePacketizer(cfg)
     
     writers = {}
@@ -79,12 +88,11 @@ if __name__ == "__main__":
         t_bucket = pp_stream.pop(ts)
         pp_processed += len(t_bucket)
 
-        for s in unpack.process(t_bucket):
-            writers[s.buffer][1].writerow(s.get_csv_dict())
+        for s, buff_idx in unpack.process(t_bucket):
+            writers[buff_idx][1].writerow(s.get_csv_dict())
             slices += 1
 
         display_progress(pp_processed, pp_total)
-
 
     for w in writers.values():
         w[0].close()

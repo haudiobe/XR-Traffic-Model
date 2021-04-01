@@ -16,6 +16,7 @@ import logging as logger
 from .feedback import Referenceable, ReferenceableList
 from .utils import ConfigException, _requires
 
+CU_SIZE = 64
 
 INTRA_VARIANCE = 0.1
 INTER_VARIANCE = 0.2
@@ -61,7 +62,6 @@ class Delay:
         #     return stats.truncnorm( a, b, loc=mean, scale=std).rvs()
 
 class EncodingDelay(Delay):
-    
     def get_delay(self, no_slices:float, frame_interval_micro_sec:float):
         if self.mode == self.GAUSSIANTRUNC:
             mean, std = self.parameter1 / no_slices, self.parameter2 / no_slices
@@ -72,9 +72,33 @@ class EncodingDelay(Delay):
         else:
             return super().get_delay()
 
-class EncoderConfig:
-    
-    def __init__(self):
+class FrameConfig:
+    def __init__(self, *args, **kwargs):
+        self.frame_width = kwargs.get("frame_width", 2048)
+        self.frame_height = kwargs.get("frame_height", 2048)
+        self.cu_size = kwargs.get("cu_size", CU_SIZE)
+        self.cu_count_width = self.frame_width // self.cu_size
+        self.cu_count_height = self.frame_height // self.cu_size
+        self.slices_per_frame = kwargs.get("slices_per_frame", 1)
+
+    def get_frame_file(self, frame_idx:int, buff_idx=0) -> str:
+        return f'{frame_idx}_{buff_idx}.csv'
+
+    def parse_frame_idx(self, frame_file:str) -> int:
+        # dir/S-Trace_%SCENARIO_KEY%[%USER_IDX%].frames/%FRAME_IDX%_%BUFFER_IDX%.csv
+        return int(Path(frame_file).stem.split('_')[0])
+
+    def get_cu_per_frame(self):
+        return int(( self.frame_width * self.frame_height ) / self.cu_size**2 )
+
+    def get_cu_per_slice(self):
+        return int(( self.frame_width / self.cu_size ) * self.frame_height / ( self.slices_per_frame * self.cu_size ))
+
+
+class EncoderConfig(FrameConfig):
+    def __init__(self, *args, **kwargs):
+        super.__init__(self, *args, **kwargs)
+        
         self.rc_mode = RC_mode.VBR
         self.rc_bitrate = 10000000
         self.rc_window_size = 1
@@ -88,26 +112,14 @@ class EncoderConfig:
         self.total_frames = -1
         
         self.buffers = []
-        self.frame_width = 2048
-        self.frame_height = 2048
         self.frame_rate = 60.0
-        self.slices_per_frame = 1
 
         self.buffer_interleaving = True
         self._pre_delay = None
         self._encoding_delay = None
-
-        # CU map config
-        self.cu_size = 64
         
         # slices/CU refs
         self.strace_output = './S-Trace.csv'
-
-    def get_cu_per_frame(self):
-        return int(( self.frame_width * self.frame_height ) / self.cu_size**2 )
-
-    def get_cu_per_slice(self):
-        return int(( self.frame_width / self.cu_size ) * self.frame_height / ( self.slices_per_frame * self.cu_size ))
 
     def get_frame_duration(self, unit=1e6) -> float:
         return unit / self.frame_rate
@@ -227,7 +239,7 @@ class EncoderConfig:
         cfg.start_frame = data.get("start_frame", 0)
         cfg.total_frames = data.get("total_frames", -1)
         cfg.buffer_interleaving = data.get("buffer_interleaving", False)
-        cfg.cu_size = data.get("cu_size", 64)
+        cfg.cu_size = data.get("cu_size", CU_SIZE)
         _requires("S-Trace", data, f'"S-Trace" output path definition missing')
         cfg.strace_output = data["S-Trace"]
         return cfg
@@ -257,10 +269,10 @@ def serialize_list(l:List[Any], separator=",") -> str:
     return str(separator).join([str(i) for i in l])
 
 def parse_and_scale(div=100):
-    return lambda x: None if x in ['None', ''] else float(x) / div
+    return lambda x: 0 if x in ['None', ''] else float(x) / div
 
 def scale_and_serialize(mul=100):
-    return lambda x: x if x == None else str(int(x*mul))
+    return lambda x: 0 if x == None else str(int(x*mul))
 
 parse_and_scale_100 = parse_and_scale(100)
 scale_and_serialize_100 = scale_and_serialize(100)
@@ -364,23 +376,51 @@ class CU_status(CsvEnum):
     DAMAGED         = 1
     UNAVAILABLE     = 2
 
+class CU(CsvRecord):
+    attributes = [
+        CSV("address", int), # Address of CU in frame.
+        CSV("size", int), # Slice size in bytes.
+        CSV("mode", CU_mode.parse, CU_mode.serialize, None), # The mode of the CU 1=intra, 2=merge, 3=skip, 4=inter
+        CSV("reference", lambda x: None if x == 'None' else int(x)), # The reference frame of the CU 0 n/a, 1=previous, 2=2 in past, etc.
+        CSV("qpnew", parse_and_scale_100, scale_and_serialize_100), # the QP decided for the CU
+        CSV("psnr_y", parse_and_scale_1000, scale_and_serialize_1000), # the estimated Y-PSNR for the CU in db multiplied by 1000
+        CSV("psnr_yuv", parse_and_scale_1000, scale_and_serialize_1000) # the estimated weighted YUV-PSNR for the CU db multiplied by 1000
+    ]
+
+    def __init__(self, data:dict):
+        self.status = CU_status.UNAVAILABLE
+        self.received = False
+        self.ref_cu = None
+        super().__init__(data)
+
+    def get_status(self):
+        if self.received:
+            if self.mode == CU_mode.INTRA:
+                return CU_status.OK
+            elif self.mode == CU_mode.INTER:
+                if self.ref_cu.get_status() == CU_status.OK:
+                    return CU_status.OK
+                else:
+                    return CU_status.DAMAGED
+        else:
+            return CU_status.UNAVAILABLE
 
 class CuMap:
     
-    def __init__(self, count:int):
+    def __init__(self, count):
         self.count = count
-        self._map:List[CU] = [None] * count
+        self.cus:List[CU] = [None] * count
 
-    def count(self) -> List[int]:
+    def cu_type_count(self) -> List[int]:
         intra, inter, merge, skip = [0] * 4
-        for cu in self._map:
-            if CU_mode.INTRA:
+        for cu in self.cus:
+            if cu.mode == CU_mode.INTRA:
                 intra += 1
-            elif CU_mode.INTER:
+            elif cu.mode == CU_mode.INTER:
                 inter += 1
-            elif CU_mode.MERGE:
+            elif cu.mode == CU_mode.MERGE:
                 merge += 1
-            elif CU_mode.SKIP:
+            elif cu.mode == CU_mode.SKIP:
                 skip += 1
             else:
                 raise ValueError('invalid CU type')
@@ -398,21 +438,21 @@ class CuMap:
         return [CU({'mode':CU_mode.INTRA}) for i in range(count)]
 
     def draw(self, *args, **kwargs):
-        self._map = self.draw_ctus(*args, **kwargs)
+        self.cus = self.draw_ctus(*args, **kwargs)
 
     def get_slice(self, index:int, count:int) -> List['CU']:
         stop = index + count
-        return self._map[index:stop]
+        return self.cus[index:stop]
 
     def update_slice(self, i:int, m:List['CU']):
         stop = i + len(m)
         assert stop <= self.count
-        self._map[i:stop] = m
+        self.cus[i:stop] = m
 
     def dump(self, csv_out:str):
         with open(csv_out, 'w') as f:
             writer = CU.get_csv_writer(f)
-            for idx, cu in enumerate(self._map):
+            for idx, cu in enumerate(self.cus):
                 cu.address = idx
                 writer.writerow(cu.get_csv_dict())
 
@@ -420,8 +460,10 @@ class CuMap:
         data = []
         with open(csv_in, 'r') as f:
             data = [ctu for ctu in CU.iter_csv_file(csv_in)]
-        assert len(data) == self.count
-        self._map = data
+        assert len(data) == self.count, f'!!! invalid cu count in {csv_in}.\n\texpected {self.count} / found {len(data)}'
+        self.cus = data
+
+
 
 #################################################################################################################################
 # models
@@ -510,9 +552,47 @@ def validates_cu_distribution(vt:VTraceTx, raise_exception=True) -> bool:
     return valid
 
 
-class VTraceRx(VTraceTx):
-    pass
+class VTraceRx(CsvRecord):
 
+    attributes = [
+        CSV("time_stamp_in_micro_s", int, None, -1), #  Availability time of frame after decoder relative to start time 0 in microseconds.
+        CSV("render_timing", int, None, -1), #  the rendering generation timing associated to the frame
+        CSV("QP", int, None, 0), #  Quantization Parameter decided for the frame.
+        CSV("bits", int,  int, 0), #  number of bits consumed by the frame.
+        CSV("psnr_y", parse_and_scale_1000, scale_and_serialize_1000, 0), #  the encoded Y-PSNR for the frame in dB multiplied by 1000
+        CSV("psnr_yuv", parse_and_scale_1000, scale_and_serialize_1000, 0), #  The encoded weighted YUV-PSNR for the frame in dB multiplied by 1000
+        CSV("rpsnr_y", parse_and_scale_1000, scale_and_serialize_1000, 0), #  the estimated recovered Y-PSNR for the frame in dB multiplied by 1000
+        CSV("rpsnr_yuv", parse_and_scale_1000, scale_and_serialize_1000, 0), #  the estimated weighted recovered YUV-PSNR for the frame in dB multiplied by 1000
+        CSV("total_CUs", int, None, 0), #  Total number of CUs
+        CSV("correct_CUs", int, None, 0), #  Number of correct CUs
+        CSV("lost_CUs", int, None, 0), #  Number of lost CUs
+        CSV("damaged_CUs", int, None, 0) #  Number of damaged CUs due to error propagation
+    ]
+
+    def set_frame_stats(self, frame:'Frame'):
+        self.time_stamp_in_micro_s = -1
+        self.render_timing = -1
+        for cu in frame.cu_map.cus:
+            self.psnr_yuv += cu.psnr_yuv
+            self.psnr_y += cu.psnr_y
+            self.QP += cu.qpnew
+            if cu.status == CU_status.OK:
+                self.correct_CUs += 1
+                self.rpsnr_yuv += cu.psnr_yuv
+                self.rpsnr_y += cu.psnr_y
+                self.bits += cu.size
+            elif cu.status == CU_status.DAMAGED: # referencing a damaged / unavailiable CU
+                self.damaged_CUs += 1
+            elif cu.status == CU_status.UNAVAILABLE: # LOST
+                self.lost_CUs += 1
+            self.total_CUs += 1
+
+        self.rpsnr_yuv = self.rpsnr_yuv / self.total_CUs
+        self.rpsnr_y = self.rpsnr_y / self.total_CUs
+        self.bits = int(self.bits * 8)
+        self.psnr_yuv = self.psnr_yuv / self.total_CUs
+        self.psnr_y = self.psnr_y / self.total_CUs
+        self.QP = int(self.QP / self.total_CUs)
 
 class STraceTx(CsvRecord):
     attributes = [
@@ -547,35 +627,30 @@ class STraceTx(CsvRecord):
         return st
 
 
-class STraceRx(STraceTx):
+class STraceRx(CsvRecord):
 
     attributes = [
-        *STraceTx.attributes,
-        CSV("recovery_position", lambda i: -1 if i == None else int(i), None, -1)
+        CSV("index", int, None),
+        CSV("time_stamp_in_micro_s", int, None, -1),
+        CSV("recovery_position", lambda i: -1 if i == None else int(i), None, -1),
+        CSV("size", int, None),
+        CSV("render_timing", int),
+        CSV('start_address_cu', int, None),
+        CSV('number_cus', int, None),
+        CSV('frame_file', None, None),
     ]
-    def __init__(self, *args, **kwargs):
-        self.attributes = [
-            *STraceTx.attributes,
-            CSV("recovery_position", int, None, -1)
-        ]
-        super(STraceRx, self).__init__( *args, **kwargs)
+
+    def is_late(self, max_delay=None):
+        if max_delay:
+            return self.time_stamp_in_micro_s > (self.render_timing + max_delay)
+        return False
+
+    def is_decodable(self):
+        return (self.time_stamp_in_micro_s > 0) and (self.recovery_position > 0) and (self.recovery_position == self.size)
 
     @classmethod
     def from_tx(cls, s:STraceTx):
         return cls(s.__dict__)
-
-
-class CU(CsvRecord):
-    attributes = [
-        CSV("address", int), # Address of CU in frame.
-        CSV("size", int), # Slice size in bytes.
-        CSV("mode", CU_mode.parse, CU_mode.serialize, None), # The mode of the CU 1=intra, 2=merge, 3=skip, 4=inter
-        CSV("reference", lambda x: None if x == 'None' else int(x)), # The reference frame of the CU 0 n/a, 1=previous, 2=2 in past, etc.
-        CSV("qpnew", parse_and_scale_100, scale_and_serialize_100, None), # the QP decided for the CU
-        CSV("psnr_y", parse_and_scale_1000, scale_and_serialize_1000), # the estimated Y-PSNR for the CU in db multiplied by 1000
-        CSV("psnr_yuv", parse_and_scale_1000, scale_and_serialize_1000) # the estimated weighted YUV-PSNR for the CU db multiplied by 1000
-    ]
-
 
 class PTraceTx(CsvRecord):
     attributes = [
@@ -708,7 +783,7 @@ class RateControl:
     def weighted_qp(self, frame:'Frame', offset=0):
         i_qp = frame.i_qp + offset
         p_qp = frame.p_qp + offset
-        vt = frame._vtrace
+        vt = frame.vtrace
         return (i_qp*vt.intra + p_qp*(1-vt.intra))
 
     def iter_qp_adjustments(self, frame:'Frame', step=1):
@@ -763,7 +838,7 @@ class RateControl:
 
 
 def model_pnsr_adjustment(qp_new, qp_ref, psnr):
-    qp_delta = qp_new - qp_ref
+    qp_delta = qp_ref - qp_new
     return psnr + qp_delta
 
 class Slice(Referenceable):
@@ -814,35 +889,48 @@ class Slice(Referenceable):
 
 class Frame:
 
-    def __init__(self, 
-            vtrace:VTraceTx,
-            cfg:EncoderConfig,
-            view_idx=0,
-            frame_idx=-1
-        ):
-        self.frame_idx = frame_idx
+    def __init__(self, cfg:FrameConfig, view_idx=0, frame_idx=-1, vtrace:VTraceTx=None, frame_file:str=None):
         self.view_idx = view_idx
+        self.frame_idx = frame_idx
+
         self.slices_per_frame = cfg.slices_per_frame
+        self.cu_size = cfg.cu_size
         self.cu_per_slice = cfg.get_cu_per_slice()
         self.cu_count = cfg.get_cu_per_frame()
-        self.cu_size = cfg.cu_size
-
-        self.intra_mean = vtrace.get_intra_mean(self.cu_count)
-        self.inter_mean = vtrace.get_inter_mean(self.cu_count)
-        self.i_qp = vtrace.i_qp
-        self.i_y_psnr = vtrace.i_y_psnr
-        self.i_yuv_psnr = vtrace.i_yuv_psnr
-        
-        self.p_qp = vtrace.p_qp
-        self.p_y_psnr = vtrace.p_y_psnr
-        self.p_yuv_psnr = vtrace.p_yuv_psnr
-
-        self.cu_distribution = vtrace.get_cu_distribution()
         self.cu_map = CuMap(self.cu_count)
+        if frame_file != None:
+            self.cu_map.load(frame_file)
         self.slices = [Slice(self, slice_idx) for slice_idx in range(self.slices_per_frame)]
-
-        self._vtrace = vtrace
+        self.vtrace = vtrace
     
+    def intra_mean(self):
+        return self.vtrace.get_intra_mean(self.cu_count) if self.vtrace else -1
+
+    def inter_mean(self):
+        return self.vtrace.get_inter_mean(self.cu_count) if self.vtrace else -1
+
+    def i_qp(self):
+        return self.vtrace.i_qp if self.vtrace else -1
+
+    def i_y_psnr(self):
+        return self.vtrace.i_y_psnr if self.vtrace else -1
+
+    def i_yuv_psnr(self):
+        return self.vtrace.i_yuv_psnr if self.vtrace else -1
+
+    def p_qp(self):
+        return self.vtrace.p_qp if self.vtrace else -1
+
+    def p_y_psnr(self):
+        return self.vtrace.p_y_psnr if self.vtrace else -1
+
+    def p_yuv_psnr(self):
+        return self.vtrace.p_yuv_psnr if self.vtrace else -1
+
+    def cu_distribution(self):
+        return self.vtrace.get_cu_distribution() if self.vtrace else -1
+
+
     def draw(self, address:int=0, count:int=-1, intra_refresh=False):
         """
         Draw into the frame's CU map, uses the existing CTU distribution unless `intra_refresh=True`

@@ -172,20 +172,43 @@ def assert_sorted(l):
 
 class DePacketizer:
 
+
+    @classmethod
+    def is_complete_slice(cls, pp_sorted):
+        for num_in_unit, p in enumerate(pp_sorted):
+            if p.number_in_unit != num_in_unit:
+                return False
+        return p.last_in_unit == 1
+    
+    @classmethod
+    def get_recovered_bytes(cls, pp_recovered, pp_overhead) -> int:
+        rec = 0
+        for pp in pp_recovered:
+            rec += pp.size-pp_overhead
+        return rec
+
+    @classmethod
+    def get_recovered_timestamp(cls, pp_recovered) -> int:
+        return max(map(lambda x: x.time_stamp_in_micro_s, pp_recovered))
+
     def __init__(self, cfg:DePacketizerCfg):
         """ a class to process timestamped buckets of incoming PTrace into decodable Strace """
         self.cfg = cfg
         self.buffer = StereoJitterBuffer(cfg)
-        self.strace_data = [*STraceRx.iter_csv_file(cfg.strace_file)]
+        self.strace_data = [*STraceTx.iter_csv_file(cfg.strace_file)]
 
     def process(self, packets:Iterable[PTraceTx]) -> Iterable[STraceRx]:
+        """
+        process a batch of packets, multiple subsequent batches can be processed.
+        yields STraceRx (Sp-traces)
+        """
 
         for p in packets:
             self.buffer.append(p)
         
         for slice_idx, pp_sorted in self.buffer.iter_complete_slices():
-        
-            s = self.strace_data[slice_idx]
+            stx = self.strace_data[slice_idx]
+            s = STraceRx.from_tx(stx)
             pp_recovered = []
 
             for pp in pp_sorted:
@@ -203,24 +226,9 @@ class DePacketizer:
                 s.time_stamp_in_micro_s = self.get_recovered_timestamp(pp_recovered)
             
             assert (type(s.recovery_position) == int) and (s.recovery_position >= 0)
-            yield s
+            yield s, stx.buffer
             self.buffer.delete(slice_idx)
-            
-
-    def is_complete_slice(self, pp_sorted):
-        for num_in_unit, p in enumerate(pp_sorted):
-            if p.number_in_unit != num_in_unit:
-                return False
-        return p.last_in_unit == 1
     
-    def get_recovered_bytes(self, pp_recovered, pp_overhead) -> int:
-        rec = 0
-        for pp in pp_recovered:
-            rec += pp.size-pp_overhead
-        return rec
-
-    def get_recovered_timestamp(self, pp_recovered) -> int:
-        return max(map(lambda x: x.time_stamp_in_micro_s, pp_recovered))
 
 
 class JitterBuffer:
