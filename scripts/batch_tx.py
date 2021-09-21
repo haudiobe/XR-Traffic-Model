@@ -5,15 +5,16 @@ from pathlib import Path
 import shutil
 import json
 import argparse
+from copy import deepcopy
 
 users = {
-    'start_frame': [ 1 ] # , 1801, 901, 2701, 451, 2251, 1351, 3251, 226, 2026, 1126, 2926, 676, 2476, 1576, 3476 ]
+    'start_frame': [ 1, 1801, 901, 2701, 451, 2251, 1351, 3251, 226, 2026, 1126, 2926, 676, 2476, 1576, 3476 ]
 }
 
 def gen_user_configs(base_cfg:dict):
 
     for idx, start_frame in enumerate(users['start_frame']):
-        cfg = base_cfg.copy()
+        cfg = deepcopy(base_cfg)
         cfg['start_frame'] = start_frame
         yield idx, cfg
 
@@ -54,7 +55,7 @@ class Project(object):
         return p
 
     def save_ptrace_cfg(self):
-        cfg = P.packet_cfg.copy()
+        cfg = deepcopy(P.packet_cfg)
         cfg['S-Trace']['source'] = str(self.get_strace_path())
         cfg['P-Trace'] = str(self.get_ptrace_path())
         p = self.output_dir / self.packet_cfg_path.name
@@ -94,12 +95,10 @@ if __name__ == '__main__':
         if not plot_only:
             cmd = ['python3', './xrtm_encoder.py', '-c', str(encoder_cfg_path), '-u', str(idx)]
             print(cmd)
+            raise
             subprocess.run(['python3', './xrtm_encoder.py', '-c', str(encoder_cfg_path), '-u', str(idx)])
             subprocess.run(['python3', './xrtm_packetizer.py', '-c', str(packet_cfg), '-u', str(idx)])
         if args.plot_only_strace or (not plot_only):
             subprocess.run(['python3', './plot.py', '-s', P.get_strace_path(idx), '-n'])
         if args.plot_only_ptrace or (not plot_only):
             subprocess.run(['python3', './plot.py', '-p', P.get_ptrace_path(idx), '-n'])
-        
-
-        
